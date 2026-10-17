@@ -16,9 +16,9 @@ When prompting LLMs on complex research questions, brainstorming, or policy anal
 - **Dual Novelty Filters**:
   - **Semantic Cosine Similarity**: Evaluates 768-dimension embedding vectors (`gemini-embedding-001`).
   - **Local Word Jaccard Overlap**: Ensures vocabulary diversity.
-- **Automatic Model Fallback**: Gracefully falls back across Gemini models (`gemini-3.5-flash-lite`, `gemini-3.5-flash`, `gemini-4-argon`) if quotas or rate limits are encountered.
-- **Sandbox Engine**: A fully offline, deterministic test mode with capped distinct answer capacity.
-- **GitHub Repository Sync**: Commits batches automatically to `runs/<run-id>/batch-0001.jsonl` and updates `manifest.json`.
+- **Automatic Model Fallback**: Gracefully falls back across Gemini models if quotas or rate limits are encountered.
+- **Sandbox Engine**: A fully offline, deterministic test mode with word overlap filtering.
+- **GitHub Repository Sync**: Commits batches automatically from the browser to `runs/<run-id>/batch-0001.jsonl` and updates `manifest.json`.
 - **Flexible Export**: Download compiled insights as **JSONL** or **Markdown**.
 
 ---
@@ -28,7 +28,7 @@ When prompting LLMs on complex research questions, brainstorming, or policy anal
 | Layer | Technology / Implementation | Purpose |
 | --- | --- | --- |
 | **Frontend** | React 19, TypeScript, Tailwind CSS, Lucide Icons | Responsive single-page dashboard with real-time progress, attempt logs, and export tools. |
-| **Backend** | Node.js, Express (`server.ts`), `@google/genai` | Secure server-side proxy handling Gemini content generation, embeddings, and automatic model fallback. |
+| **Backend** | Node.js, Express (`server.ts`), `@google/genai` | Secure server-side proxy handling Gemini content generation, embeddings, rate-limiting, and model fallback. |
 | **Persistence** | IndexedDB (`storage.ts`) | Client-side storage for settings, run archives, and vector memories. |
 | **Sync** | GitHub Contents API (`github.ts`) | Automated batch commits and manifest tracking. |
 
@@ -48,9 +48,10 @@ When prompting LLMs on complex research questions, brainstorming, or policy anal
    ```
 
 3. **Configure environment variables**:
-   Create a `.env` file in the root directory (refer to `.env.example`):
+   Create a `.env` file in the root directory:
    ```env
    GEMINI_API_KEY="your-gemini-api-key"
+   APP_ACCESS_TOKEN="" # Optional: require x-access-token header on /api routes
    PORT=3000
    ```
 
@@ -59,6 +60,12 @@ When prompting LLMs on complex research questions, brainstorming, or policy anal
    npm run dev
    ```
    Open `http://localhost:3000` in your browser.
+
+---
+
+## Security & Secrets
+- **Gemini Key**: The Gemini API key stays strictly on the server (`server.ts`) and is never exposed to the browser.
+- **GitHub & Server Access Tokens**: GitHub commits run directly in the browser. Tokens are kept in memory by default for the session. Users can opt-in to saving tokens to IndexedDB via the "Remember token on this device" setting (with the caveat that any script running on the site can read saved browser tokens).
 
 ---
 
@@ -71,14 +78,6 @@ When prompting LLMs on complex research questions, brainstorming, or policy anal
 
 ### Prompts to Avoid (Factual / Single-Answer)
 - *"What is one plus one?"* (Factual queries have only one valid formulation and will immediately trigger semantic duplication rejections).
-
----
-
-## Configuration & Notes
-
-- **Embedding & Local Thresholds**: Adjust the similarity sliders to control how strict novelty filtering is (higher threshold = stricter filtering).
-- **Free-Tier Limits**: Built-in automatic model fallback and rate-limit exponential backoff ensure smooth operation even on free-tier rate limits.
-- **API Security**: API keys and GitHub tokens remain strictly server-side by default, with an opt-in browser storage setting.
 
 ---
 

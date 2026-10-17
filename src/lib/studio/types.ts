@@ -18,6 +18,8 @@ export interface StudioSettings {
   ghOwnerRepo: string;
   ghBranch: string;
   ghToken: string;
+  appAccessToken: string;     // for server auth if APP_ACCESS_TOKEN is set
+  useLlmJudge: boolean;       // LLM-as-judge novelty check validation step
 }
 
 export const MODELS = [
@@ -42,6 +44,8 @@ export const DEFAULT_SETTINGS: StudioSettings = {
   ghOwnerRepo: '',
   ghBranch: 'main',
   ghToken: '',
+  appAccessToken: '',
+  useLlmJudge: true,
 };
 
 export interface AnswerEntry {
@@ -57,6 +61,7 @@ export interface AnswerEntry {
   similarityScore?: number;
   closestMatchId?: string;
   closestMatchText?: string;
+  modelUsed?: string;
 }
 
 export interface RunState {

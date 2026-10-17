@@ -4,7 +4,7 @@
  */
 
 import { AnswerEntry, StudioSettings } from './types';
-import { checkModel, generateAnswer, getEmbedding } from './gemini';
+import { checkModel, generateAnswer, getEmbedding, llmNoveltyJudge } from './gemini';
 import { judgeNovelty, normalizeVector, contentWords } from './novelty';
 import { generateSandboxAnswer, getSandboxCapacity } from './sandbox';
 import { commitBatchToGitHub, validateRepoFormat } from './github';
@@ -131,6 +131,8 @@ export class StudioRunner {
 
       try {
         let text = '';
+        let modelUsed: string | undefined = undefined;
+
         if (this.settings.engine === 'sandbox') {
           const cap = getSandboxCapacity();
           if (currentAttempt > cap) {
@@ -139,10 +141,13 @@ export class StudioRunner {
             break;
           }
           text = generateSandboxAnswer(currentAttempt - 1);
+          modelUsed = 'sandbox';
           await new Promise(r => setTimeout(r, 50)); // simulate brief tick
         } else {
           // Gemini generation with backoff
-          text = await this.generateWithBackoff();
+          const genResult = await this.generateWithBackoff();
+          text = genResult.text;
+          modelUsed = genResult.modelUsed;
         }
 
         if (!text || text.trim() === '') {
@@ -150,7 +155,7 @@ export class StudioRunner {
           continue;
         }
 
-        // Get embedding for text (if Gemini engine) or mock for sandbox
+        // Fix 1: When engine is "sandbox", do not compute fake embedding. Pass empty embedding [] so judgeNovelty uses only word overlap.
         let embedding: number[] = [];
         if (this.settings.engine === 'gemini') {
           try {
@@ -159,13 +164,11 @@ export class StudioRunner {
           } catch (e) {
             console.warn('Embedding generation warning:', e);
           }
-        } else {
-          embedding = normalizeVector([text.length, text.charCodeAt(0) || 0, 1.0]);
         }
 
         const wordSet = Array.from(contentWords(text));
 
-        // Judge novelty against kept entries
+        // 1. Judge novelty against kept entries (Embedding + Jaccard)
         const judge = judgeNovelty(
           text,
           embedding,
@@ -173,6 +176,20 @@ export class StudioRunner {
           this.settings.embeddingThreshold,
           this.settings.localThreshold
         );
+
+        let isNovel = judge.isNovel;
+        let reason = judge.reason;
+        let similarityScore = judge.similarityScore;
+
+        // 2. Final LLM-as-judge validation step if basic filter passed and useLlmJudge is enabled
+        if (isNovel && this.settings.useLlmJudge && this.keptEntries.length > 0 && this.settings.engine === 'gemini') {
+          const closest = this.keptEntries.slice(-5).map(e => e.text);
+          const llmResult = await llmNoveltyJudge(text, closest, this.settings.model);
+          if (!llmResult.isNovel) {
+            isNovel = false;
+            reason = `LLM Judge: ${llmResult.reason}`;
+          }
+        }
 
         const entry: AnswerEntry = {
           id: `${this.runId}-${currentAttempt}`,
@@ -182,16 +199,17 @@ export class StudioRunner {
           timestamp: Date.now(),
           embedding,
           wordSet,
-          status: judge.isNovel ? 'kept' : 'rejected',
-          reason: judge.reason,
-          similarityScore: judge.similarityScore,
+          status: isNovel ? 'kept' : 'rejected',
+          reason,
+          similarityScore,
           closestMatchId: judge.closestMatchId,
           closestMatchText: judge.closestMatchText,
+          modelUsed,
         };
 
         this.entries.push(entry);
 
-        if (judge.isNovel) {
+        if (isNovel) {
           this.keptEntries.push(entry);
           this.batchBuffer.push(entry);
           this.consecutiveMisses = 0;
@@ -233,7 +251,7 @@ export class StudioRunner {
     }
   }
 
-  private async generateWithBackoff(): Promise<string> {
+  private async generateWithBackoff(): Promise<{ text: string; modelUsed?: string }> {
     let delay = 2000;
     let totalElapsed = 0;
     const maxElapsed = 15000; // 15 seconds max backoff for transient issues
@@ -248,7 +266,7 @@ export class StudioRunner {
           recentTexts,
           this.settings.highThinking
         );
-        return result.text;
+        return { text: result.text, modelUsed: result.modelUsed };
       } catch (err: any) {
         const status = err.status || err.code || 500;
         if (

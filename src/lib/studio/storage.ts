@@ -37,13 +37,23 @@ export async function saveSettings(settings: StudioSettings): Promise<void> {
     const db = await openDB();
     const tx = db.transaction(STORE_SETTINGS, 'readwrite');
     const store = tx.objectStore(STORE_SETTINGS);
-    store.put({ key: 'current_settings', value: settings });
-    // Also save non-secret settings to localStorage for immediate sync
-    const safeSettings = { ...settings };
+
+    const dbSettings = { ...settings };
+    const localSettings = { ...settings };
+
     if (!settings.rememberSecrets) {
-      safeSettings.ghToken = '';
+      dbSettings.ghToken = '';
+      dbSettings.appAccessToken = '';
+      localSettings.ghToken = '';
+      localSettings.appAccessToken = '';
+    } else {
+      // When rememberSecrets is true, store token in IndexedDB only, never in localStorage
+      localSettings.ghToken = '';
+      localSettings.appAccessToken = '';
     }
-    localStorage.setItem('ras_settings', JSON.stringify(safeSettings));
+
+    store.put({ key: 'current_settings', value: dbSettings });
+    localStorage.setItem('ras_settings', JSON.stringify(localSettings));
   } catch (err) {
     console.error('Failed to save settings:', err);
   }
@@ -59,7 +69,13 @@ export async function loadSettings(): Promise<StudioSettings> {
       const store = tx.objectStore(STORE_SETTINGS);
       const req = store.get('current_settings');
       req.onsuccess = () => {
-        const stored = req.result?.value;
+        const stored = req.result?.value || {};
+        // If rememberSecrets is false, ensure tokens are not restored from IDB
+        const remember = stored.rememberSecrets ?? parsedLocal.rememberSecrets ?? DEFAULT_SETTINGS.rememberSecrets;
+        if (!remember) {
+          stored.ghToken = '';
+          stored.appAccessToken = '';
+        }
         resolve({ ...DEFAULT_SETTINGS, ...parsedLocal, ...stored });
       };
       req.onerror = () => resolve({ ...DEFAULT_SETTINGS, ...parsedLocal });

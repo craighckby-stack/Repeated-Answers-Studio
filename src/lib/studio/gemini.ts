@@ -3,6 +3,19 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+let currentAccessToken = '';
+export function setAppAccessToken(token: string) {
+  currentAccessToken = token || '';
+}
+
+function getHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (currentAccessToken) {
+    headers['x-access-token'] = currentAccessToken;
+  }
+  return headers;
+}
+
 async function safeFetchJson(url: string, options: RequestInit): Promise<any> {
   const res = await fetch(url, options);
   const text = await res.text();
@@ -24,7 +37,7 @@ export async function checkModel(model: string): Promise<{ success: boolean; tex
   try {
     const data = await safeFetchJson('/api/check-model', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getHeaders(),
       body: JSON.stringify({ model }),
     });
     return { success: true, text: data.text };
@@ -39,20 +52,42 @@ export async function generateAnswer(
   shape: string,
   recentAnswers: string[],
   highThinking: boolean
-): Promise<{ text: string; finishReason?: string }> {
+): Promise<{ text: string; finishReason?: string; modelUsed?: string; fallbackUsed?: boolean }> {
   const data = await safeFetchJson('/api/generate', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify({ model, question, shape, recentAnswers, highThinking }),
   });
-  return { text: data.text, finishReason: data.finishReason };
+  return {
+    text: data.text,
+    finishReason: data.finishReason,
+    modelUsed: data.modelUsed,
+    fallbackUsed: data.fallbackUsed,
+  };
 }
 
 export async function getEmbedding(text: string): Promise<number[]> {
   const data = await safeFetchJson('/api/embed', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify({ text }),
   });
   return data.embedding || [];
+}
+
+export async function llmNoveltyJudge(
+  candidate: string,
+  closestKept: string[],
+  model = 'gemini-3.5-flash-lite'
+): Promise<{ isNovel: boolean; reason: string }> {
+  try {
+    const data = await safeFetchJson('/api/novelty-judge', {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({ candidate, closestKept, model }),
+    });
+    return data;
+  } catch {
+    return { isNovel: true, reason: 'LLM judge unavailable – defaulting to novel' };
+  }
 }

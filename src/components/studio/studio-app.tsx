@@ -13,6 +13,7 @@ import {
 } from '../../lib/studio/types';
 import { StudioRunner } from '../../lib/studio/runner';
 import { loadSettings, saveSettings } from '../../lib/studio/storage';
+import { setAppAccessToken } from '../../lib/studio/gemini';
 import { validateRepoFormat } from '../../lib/studio/github';
 import { getSandboxCapacity } from '../../lib/studio/sandbox';
 import {
@@ -33,6 +34,7 @@ import {
   RefreshCw,
   Sliders,
   Zap,
+  Lock,
 } from 'lucide-react';
 
 const PRESETS = [
@@ -62,10 +64,11 @@ export function StudioApp() {
   const [warningBanner, setWarningBanner] = useState<string | null>(null);
   const runnerRef = useRef<StudioRunner | null>(null);
 
-  // Load settings on mount
+  // Load settings on mount & sync access token
   useEffect(() => {
     loadSettings().then((loaded) => {
       setSettings(loaded);
+      setAppAccessToken(loaded.appAccessToken);
       setRunState((prev) => ({ ...prev, target: loaded.target }));
     });
   }, []);
@@ -102,6 +105,9 @@ export function StudioApp() {
     const updated = { ...settings, [key]: value };
     setSettings(updated);
     saveSettings(updated);
+    if (key === 'appAccessToken') {
+      setAppAccessToken(value);
+    }
     if (runnerRef.current) {
       runnerRef.current.updateSettings(updated);
     }
@@ -154,7 +160,7 @@ export function StudioApp() {
 
   const exportJSONL = () => {
     const jsonl = keptEntries
-      .map((e) => JSON.stringify({ index: e.index, text: e.text, timestamp: e.timestamp }))
+      .map((e) => JSON.stringify({ index: e.index, text: e.text, timestamp: e.timestamp, modelUsed: e.modelUsed }))
       .join('\n');
     const blob = new Blob([jsonl], { type: 'application/x-jsonlines' });
     const url = URL.createObjectURL(blob);
@@ -167,7 +173,7 @@ export function StudioApp() {
 
   const exportMarkdown = () => {
     const md = `# Repeated Answers Studio: ${settings.question}\n\n` +
-      keptEntries.map((e, i) => `### ${i + 1}. Attempt #${e.index}\n${e.text}\n`).join('\n');
+      keptEntries.map((e, i) => `### ${i + 1}. Attempt #${e.index}${e.modelUsed ? ` (${e.modelUsed})` : ''}\n${e.text}\n`).join('\n');
     const blob = new Blob([md], { type: 'text/markdown' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -306,6 +312,9 @@ export function StudioApp() {
                   <option value="gemini">Gemini API (AI)</option>
                   <option value="sandbox">Sandbox (Deterministic)</option>
                 </select>
+                {settings.engine === 'sandbox' && (
+                  <p className="text-[10px] text-indigo-400 mt-1">Sandbox engine uses word overlap only.</p>
+                )}
               </div>
 
               <div>
@@ -341,6 +350,7 @@ export function StudioApp() {
                       <option key={m} value={m} />
                     ))}
                   </datalist>
+                  <p className="text-[10px] text-amber-400/80 mt-1">Note: gemini-4-argon requires a paid API key.</p>
                 </div>
 
                 <div className="flex items-center justify-between pt-1">
@@ -428,6 +438,20 @@ export function StudioApp() {
                   className="w-full accent-indigo-500 bg-slate-800 h-1.5 rounded-lg appearance-none cursor-pointer"
                 />
               </div>
+
+              <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+                <div>
+                  <span className="text-xs font-medium text-slate-300 block">LLM-as-Judge Validation</span>
+                  <span className="text-[10px] text-slate-500">Strict AI reasoning verification on top of vector match</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.useLlmJudge}
+                  onChange={(e) => handleSettingChange('useLlmJudge', e.target.checked)}
+                  disabled={runState.status === 'running'}
+                  className="w-4 h-4 rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-indigo-500"
+                />
+              </div>
             </div>
           </div>
 
@@ -462,6 +486,20 @@ export function StudioApp() {
                 />
               </div>
 
+              <div>
+                <label className="text-xs font-medium text-slate-400 mb-1 block flex items-center gap-1.5">
+                  <Lock className="w-3.5 h-3.5 text-indigo-400" /> Server Access Token (Optional)
+                </label>
+                <input
+                  type="password"
+                  value={settings.appAccessToken}
+                  onChange={(e) => handleSettingChange('appAccessToken', e.target.value)}
+                  disabled={runState.status === 'running'}
+                  placeholder="x-access-token secret..."
+                  className="w-full rounded-xl bg-slate-950 border border-slate-800 p-2.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
               <div className="flex items-start gap-2 pt-1">
                 <input
                   type="checkbox"
@@ -471,7 +509,7 @@ export function StudioApp() {
                   className="mt-0.5 w-4 h-4 rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-indigo-500"
                 />
                 <label htmlFor="remember-secrets" className="text-[11px] text-slate-400 leading-tight">
-                  Remember token on this device (Opt-in. Warning: Scripts on this page can read saved tokens).
+                  Remember token on this device (Opt-in. Warning: A saved token can be read by any script running on this site).
                 </label>
               </div>
             </div>
@@ -607,7 +645,9 @@ export function StudioApp() {
                   keptEntries.map((e, idx) => (
                     <div key={e.id} className="p-4 rounded-xl bg-slate-950 border border-slate-800/80 space-y-2">
                       <div className="flex items-center justify-between text-xs text-slate-500">
-                        <span className="font-semibold text-indigo-400">#{(idx + 1)} (Attempt #{e.index})</span>
+                        <span className="font-semibold text-indigo-400">
+                          #{(idx + 1)} (Attempt #{e.index}) {e.modelUsed && <span className="text-[10px] text-slate-400 font-mono ml-2">[{e.modelUsed}]</span>}
+                        </span>
                         <span>{new Date(e.timestamp).toLocaleTimeString()}</span>
                       </div>
                       <p className="text-slate-200 text-sm whitespace-pre-wrap leading-relaxed">{e.text}</p>
@@ -633,8 +673,9 @@ export function StudioApp() {
                       }`}
                     >
                       <div className="flex items-center justify-between">
-                        <span className={`font-semibold uppercase tracking-wider ${e.status === 'kept' ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          Attempt #{e.index} — {e.status}
+                        <span className={`font-semibold uppercase tracking-wider flex items-center gap-2 ${e.status === 'kept' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          <span>Attempt #{e.index} — {e.status}</span>
+                          {e.modelUsed && <span className="text-[10px] text-slate-400 font-mono lowercase">({e.modelUsed})</span>}
                         </span>
                         <span className="text-slate-500">{new Date(e.timestamp).toLocaleTimeString()}</span>
                       </div>
