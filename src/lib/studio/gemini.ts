@@ -77,16 +77,27 @@ export async function getEmbeddings(texts: string[]): Promise<number[][]> {
   return data.embeddings || [];
 }
 
+export async function getEmbedding(text: string): Promise<number[]> {
+  const embs = await getEmbeddings([text]);
+  return embs[0] || [];
+}
+
 export async function llmNoveltyJudge(
   candidate: string,
   closestKept: string[],
+  candidateCore?: string,
   model = 'gemini-3.5-flash-lite'
 ): Promise<{ isNovel: boolean; reason: string }> {
   try {
     const data = await safeFetchJson('/api/novelty-judge', {
       method: 'POST',
       headers: getHeaders(),
-      body: JSON.stringify({ candidate, closestKept, model }),
+      body: JSON.stringify({
+        candidate,
+        closestKept,
+        candidateCore,
+        model,
+      }),
     });
     return data;
   } catch {

@@ -277,23 +277,31 @@ async function startServer() {
 
   app.post('/api/novelty-judge', rateLimitMiddleware, async (req, res) => {
     try {
-      const { candidate, closestKept, model } = req.body;
-      const prompt = `You are a strict novelty judge for research insights.
+      const { candidate, closestKept, candidateCore, model } = req.body;
+      const prompt = `You are a strict conceptual novelty judge for research insights.
 
-Candidate answer:
+Candidate core idea:
+"${candidateCore || 'not provided'}"
+
+Full candidate:
 """
 ${candidate}
 """
 
-Closest existing answers:
-${closestKept.map((t: string, i: number) => `${i + 1}. ${t}`).join('\n\n')}
+Previously accepted core ideas:
+${closestKept.map((c: string, i: number) => `${i + 1}. ${c}`).join('\n')}
 
-Does the candidate introduce a GENUINELY DISTINCT insight (new claim, new mechanism, new consequence, new trade-off), or is it essentially a rephrasing / minor variation of one of the existing answers?
+Decide: Does the candidate introduce a *genuinely new conceptual claim, mechanism, or perspective*, or is it the same underlying idea expressed through a different formal system, vocabulary, or framing?
 
-Reply with ONLY valid JSON:
+Treat as SAME idea when:
+- Different formal systems (Peano / set theory / category theory / rings) all expressing "how 1+1 becomes 2"
+- Different lenses that still make the identical claim
+- Rephrasing or minor elaboration of an already-kept point
+
+Reply ONLY with valid JSON:
 {
   "isNovel": true or false,
-  "reason": "one short sentence explaining the decision"
+  "reason": "one clear sentence"
 }`;
 
       const response = await ai.models.generateContent({

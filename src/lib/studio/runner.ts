@@ -4,8 +4,8 @@
  */
 
 import { AnswerEntry, StudioSettings } from './types';
-import { checkModel, generateAnswer, getEmbeddings, llmNoveltyJudge } from './gemini';
-import { judgeNovelty, normalizeVector, contentWords } from './novelty';
+import { checkModel, generateAnswer, getEmbeddings, getEmbedding, llmNoveltyJudge } from './gemini';
+import { judgeNovelty, normalizeVector, contentWords, cosineSimilarity, jaccardSimilarity } from './novelty';
 import { generateSandboxAnswer, getSandboxCapacity } from './sandbox';
 import { commitBatchToGitHub, validateRepoFormat } from './github';
 import { saveRunArchive } from './storage';
@@ -186,51 +186,22 @@ export class StudioRunner {
           continue;
         }
 
-        // Change 2: Sandbox skips embedding, Gemini embeds [text, coreIdea] in one call
-        let embedding: number[] = [];
-        let tagEmbedding: number[] = [];
-        let tagSimilarity: number | null = null;
+        const evaluated = await this.evaluateCandidate(text, { coreIdea });
 
+        const isNovel = evaluated.keep;
+        const reason = evaluated.reason;
+        const similarityScore = evaluated.similarityScore;
+
+        let embedding: number[] = [];
         if (this.settings.engine === 'gemini') {
           try {
-            const rawEmbs = await getEmbeddings([text, coreIdea || '']);
-            if (rawEmbs && rawEmbs.length >= 2) {
-              if (rawEmbs[0] && rawEmbs[0].length > 0) embedding = normalizeVector(rawEmbs[0]);
-              if (rawEmbs[1] && rawEmbs[1].length > 0) tagEmbedding = normalizeVector(rawEmbs[1]);
-            }
+            embedding = await getEmbedding(text);
           } catch (e) {
             console.warn('Embedding generation warning:', e);
           }
         }
-
         const wordSet = Array.from(contentWords(text));
-
-        // Judge novelty against kept entries
-        const judge = judgeNovelty(
-          text,
-          embedding,
-          coreIdea,
-          tagEmbedding,
-          this.keptEntries,
-          this.settings.embeddingThreshold,
-          this.settings.localThreshold,
-          this.settings.tagThreshold
-        );
-
-        let isNovel = judge.isNovel;
-        let reason = judge.reason;
-        let similarityScore = judge.similarityScore;
-        tagSimilarity = judge.tagSimilarity ?? null;
-
-        // Final LLM-as-judge validation step if basic filter passed and useLlmJudge is enabled
-        if (isNovel && this.settings.useLlmJudge && this.keptEntries.length > 0 && this.settings.engine === 'gemini') {
-          const closest = this.keptEntries.slice(-5).map(e => e.text);
-          const llmResult = await llmNoveltyJudge(text, closest, this.settings.model);
-          if (!llmResult.isNovel) {
-            isNovel = false;
-            reason = `LLM Judge: ${llmResult.reason}`;
-          }
-        }
+        const resolvedCoreIdea = coreIdea || text.slice(0, 160);
 
         const entry: AnswerEntry = {
           id: `${this.runId}-${currentAttempt}`,
@@ -239,16 +210,13 @@ export class StudioRunner {
           text,
           timestamp: Date.now(),
           embedding,
-          tagEmbedding,
           wordSet,
           status: isNovel ? 'kept' : 'rejected',
-          coreIdea,
+          coreIdea: resolvedCoreIdea,
           reason,
           similarityScore,
-          tagSimilarity,
-          closestMatchId: judge.closestMatchId,
-          closestMatchIndex: judge.closestMatchIndex,
-          closestMatchText: judge.closestMatchText,
+          closestMatchId: evaluated.closestMatchId,
+          closestMatchText: evaluated.closestMatchText,
           selectedModel: this.settings.model,
           modelUsed,
           fallbackUsed,
@@ -385,6 +353,122 @@ export class StudioRunner {
       this.batchBuffer = [...batchToCommit, ...this.batchBuffer];
       this.notify(res.error);
     }
+  }
+
+  private async evaluateCandidate(
+    text: string,
+    structured?: { core_claim?: string; coreIdea?: string } | null
+  ): Promise<{
+    keep: boolean;
+    reason?: string;
+    similarityScore?: number;
+    closestMatchId?: string;
+    closestMatchText?: string;
+    coreSimilarity?: number;
+    tagSimilarity?: number;
+  }> {
+    const newCore =
+      structured?.core_claim ||
+      structured?.coreIdea ||
+      text.slice(0, 180);
+
+    const embedding = this.settings.engine === 'sandbox' ? [] : await getEmbedding(text);
+    const emb = normalizeVector(embedding);
+    const newWords = contentWords(text);
+
+    let maxEmbSim = 0;
+    let maxLocSim = 0;
+    let closest: AnswerEntry | null = null;
+
+    for (const kept of this.keptEntries) {
+      if (kept.embedding?.length && emb.length) {
+        const sim = cosineSimilarity(emb, kept.embedding);
+        if (sim > maxEmbSim) {
+          maxEmbSim = sim;
+          closest = kept;
+        }
+      }
+      if (kept.wordSet) {
+        const loc = jaccardSimilarity(newWords, new Set(kept.wordSet));
+        if (loc > maxLocSim) maxLocSim = loc;
+      }
+    }
+
+    const EMB_THRESHOLD = this.settings.embeddingThreshold ?? 0.88;
+    const LOC_THRESHOLD = this.settings.localThreshold ?? 0.72;
+
+    if (this.settings.engine !== 'sandbox') {
+      if (maxEmbSim >= EMB_THRESHOLD) {
+        return {
+          keep: false,
+          reason: `Full-text too similar (${(maxEmbSim * 100).toFixed(1)}% ≥ ${(EMB_THRESHOLD * 100).toFixed(0)}%)`,
+          similarityScore: maxEmbSim,
+          closestMatchId: closest?.id,
+          closestMatchText: closest?.text,
+        };
+      }
+
+      if (maxLocSim >= LOC_THRESHOLD) {
+        return {
+          keep: false,
+          reason: `Wording overlap too high (${(maxLocSim * 100).toFixed(1)}%)`,
+          similarityScore: maxLocSim,
+          closestMatchId: closest?.id,
+          closestMatchText: closest?.text,
+        };
+      }
+
+      // Core-idea embedding filter (PRIMARY conceptual gate)
+      const CORE_THRESHOLD = 0.82;
+      if (this.keptEntries.length > 0) {
+        const newCoreEmb = normalizeVector(await getEmbedding(newCore));
+        let maxCoreSim = 0;
+        let closestCore: AnswerEntry | null = null;
+
+        for (const kept of this.keptEntries) {
+          const keptCore = kept.coreIdea || kept.text.slice(0, 180);
+          const keptCoreEmb = normalizeVector(await getEmbedding(keptCore));
+          const sim = cosineSimilarity(newCoreEmb, keptCoreEmb);
+
+          if (sim > maxCoreSim) {
+            maxCoreSim = sim;
+            closestCore = kept;
+          }
+        }
+
+        if (maxCoreSim >= CORE_THRESHOLD) {
+          return {
+            keep: false,
+            reason: `Core idea too similar to previous (${(maxCoreSim * 100).toFixed(1)}%): "${closestCore?.coreIdea || closestCore?.text.slice(0, 80)}..."`,
+            similarityScore: maxCoreSim,
+            coreSimilarity: maxCoreSim,
+            closestMatchId: closestCore?.id,
+            closestMatchText: closestCore?.text,
+          };
+        }
+      }
+
+      // LLM conceptual novelty judge
+      if (this.settings.useLlmJudge !== false && this.keptEntries.length > 0) {
+        const keptCores = this.keptEntries
+          .slice(-8)
+          .map(e => e.coreIdea || e.text.slice(0, 120));
+
+        const judge = await llmNoveltyJudge(text, keptCores, newCore, this.settings.model);
+        if (!judge.isNovel) {
+          return {
+            keep: false,
+            reason: `LLM conceptual judge: ${judge.reason}`,
+          };
+        }
+      }
+    }
+
+    return {
+      keep: true,
+      similarityScore: maxEmbSim,
+      coreSimilarity: 0,
+    };
   }
 
   private archiveCurrentRun() {
