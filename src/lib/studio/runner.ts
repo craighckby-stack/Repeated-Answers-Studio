@@ -164,7 +164,7 @@ export class StudioRunner {
               .filter((i): i is string => Boolean(i))
               .slice(-30);
 
-            const recentTexts = this.keptEntries.slice(-15).map(e => e.text);
+            const recentTexts = this.keptEntries.slice(-15).map(e => e.text || '');
             const genResult = await generateAnswer(
               this.settings.model,
               this.settings.question,
@@ -174,7 +174,7 @@ export class StudioRunner {
               this.settings.highThinking
             );
             text = genResult.text;
-            coreIdea = genResult.coreIdea || text.slice(0, 160);
+            coreIdea = genResult.coreIdea || (text ? text.slice(0, 160) : 'General perspective');
             modelUsed = genResult.modelUsed;
             fallbackUsed = genResult.fallbackUsed;
           }
@@ -272,7 +272,7 @@ export class StudioRunner {
             if (isNovel && this.settings.useLlmJudge !== false && this.keptEntries.length > 0) {
               const keptCores = this.keptEntries
                 .slice(-8)
-                .map(e => e.coreIdea || e.text.slice(0, 120));
+                .map(e => e.coreIdea || (e.text ? e.text.slice(0, 120) : ''));
 
               const judge = await llmNoveltyJudge(text, keptCores, coreIdea);
               if (judge.unavailable) {
@@ -354,7 +354,8 @@ export class StudioRunner {
         } catch (err: any) {
           console.error('Run iteration error:', err);
           const status = err.status || err.code || 500;
-          if (status === 429 || status === 503 || err.message?.includes('429') || err.message?.includes('RESOURCE_EXHAUSTED')) {
+          const errMsg = (err.message || '').toLowerCase();
+          if (status === 429 || status === 503 || errMsg.includes('429') || errMsg.includes('resource_exhausted') || errMsg.includes('quota') || errMsg.includes('rate limit')) {
             this.status = 'rate_limited';
             const errEntry: AnswerEntry = {
               id: `${this.runId}-${currentAttempt}`,
