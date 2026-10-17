@@ -226,6 +226,13 @@ export class StudioRunner {
         this.batchBuffer.push(entry); // Change 3: GitHub batch buffer receives every attempt (kept, rejected, error)
 
         if (isNovel) {
+          if (resolvedCoreIdea && this.settings.engine === 'gemini') {
+            try {
+              entry.coreEmbedding = normalizeVector(await getEmbedding(resolvedCoreIdea));
+            } catch {
+              // ignore
+            }
+          }
           this.keptEntries.push(entry);
           this.consecutiveMisses = 0;
         } else {
@@ -421,18 +428,31 @@ export class StudioRunner {
       // Core-idea embedding filter (PRIMARY conceptual gate)
       const CORE_THRESHOLD = 0.82;
       if (this.keptEntries.length > 0) {
-        const newCoreEmb = normalizeVector(await getEmbedding(newCore));
+        let newCoreEmb: number[] = [];
+        try {
+          newCoreEmb = normalizeVector(await getEmbedding(newCore));
+        } catch (e) {
+          console.warn('Core embedding error:', e);
+        }
+
         let maxCoreSim = 0;
         let closestCore: AnswerEntry | null = null;
 
         for (const kept of this.keptEntries) {
-          const keptCore = kept.coreIdea || kept.text.slice(0, 180);
-          const keptCoreEmb = normalizeVector(await getEmbedding(keptCore));
-          const sim = cosineSimilarity(newCoreEmb, keptCoreEmb);
+          if (!kept.coreEmbedding && kept.coreIdea && this.settings.engine === 'gemini') {
+            try {
+              kept.coreEmbedding = normalizeVector(await getEmbedding(kept.coreIdea));
+            } catch {
+              // fallback
+            }
+          }
+          if (newCoreEmb.length > 0 && kept.coreEmbedding?.length) {
+            const sim = cosineSimilarity(newCoreEmb, kept.coreEmbedding);
 
-          if (sim > maxCoreSim) {
-            maxCoreSim = sim;
-            closestCore = kept;
+            if (sim > maxCoreSim) {
+              maxCoreSim = sim;
+              closestCore = kept;
+            }
           }
         }
 

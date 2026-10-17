@@ -125,6 +125,14 @@ export function StudioApp() {
   };
 
   const startRun = () => {
+    if (!settings.question || settings.question.trim() === '') {
+      setWarningBanner('Please enter a valid question or topic.');
+      return;
+    }
+    if (settings.question.length > 2000) {
+      setWarningBanner('Question cannot exceed 2000 characters.');
+      return;
+    }
     if (runnerRef.current) {
       setWarningBanner(null);
       runnerRef.current.updateSettings(settings);

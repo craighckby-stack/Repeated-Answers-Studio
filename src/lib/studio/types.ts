@@ -71,6 +71,7 @@ export interface AnswerEntry {
   timestamp: number;
   embedding?: number[];
   tagEmbedding?: number[];
+  coreEmbedding?: number[];
   wordSet?: string[];
   status: 'kept' | 'rejected' | 'error';
   coreIdea?: string | null;
