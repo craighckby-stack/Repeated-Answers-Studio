@@ -46,10 +46,14 @@ export function getSandboxCapacity(): number {
   return SUBJECTS.length * ACTIONS.length * OUTCOMES.length; // 10 * 10 * 10 = 1000
 }
 
-export function generateSandboxAnswer(index: number): string {
+export function generateSandboxAnswer(index: number): { text: string; coreIdea: string } {
   const subIdx = index % SUBJECTS.length;
   const actIdx = Math.floor(index / SUBJECTS.length) % ACTIONS.length;
   const outIdx = Math.floor(index / (SUBJECTS.length * ACTIONS.length)) % OUTCOMES.length;
 
-  return `${SUBJECTS[subIdx]} ${ACTIONS[actIdx]}, ${OUTCOMES[outIdx]} (Perspective #${index + 1})`;
+  const subject = SUBJECTS[subIdx];
+  const text = `${subject} ${ACTIONS[actIdx]}, ${OUTCOMES[outIdx]} (Perspective #${index + 1})`;
+  const coreIdea = subject;
+
+  return { text, coreIdea };
 }

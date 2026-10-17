@@ -7,7 +7,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 import { MODELS } from './src/lib/studio/types.js';
 
@@ -17,7 +17,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Fix 4: Default fallback list as server-side constant: gemini-3.5-flash-lite, then gemini-3.5-flash.
-// Remove gemini-4-argon and gemini-3.1-pro-preview from default fallback.
 const DEFAULT_FALLBACK_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.5-flash'];
 
 // Simple in-memory rate limiter per IP: 30 requests per minute
@@ -54,9 +53,9 @@ function accessTokenMiddleware(req: express.Request, res: express.Response, next
   next();
 }
 
-// Fix 2: Input validation middleware for generate
+// Input validation middleware for generate
 function validateGenerateInput(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const { model, question, shape, recentAnswers } = req.body;
+  const { model, question, shape, recentAnswers, recentIdeas } = req.body;
 
   const modelToTest = model || 'gemini-3.5-flash';
   if (!MODELS.includes(modelToTest)) {
@@ -82,6 +81,17 @@ function validateGenerateInput(req: express.Request, res: express.Response, next
     }
   }
 
+  if (recentIdeas !== undefined) {
+    if (!Array.isArray(recentIdeas) || recentIdeas.length > 30) {
+      return res.status(400).json({ error: 'recentIdeas must be an array with at most 30 items.' });
+    }
+    for (const idea of recentIdeas) {
+      if (typeof idea !== 'string' || idea.length > 2000) {
+        return res.status(400).json({ error: 'Each recent idea must be a string of at most 2000 characters.' });
+      }
+    }
+  }
+
   next();
 }
 
@@ -89,7 +99,6 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '10mb' }));
 
-  // Apply access token check and rate limiting to all /api routes
   app.use('/api', accessTokenMiddleware);
 
   const apiKey = process.env.GEMINI_API_KEY;
@@ -128,7 +137,7 @@ async function startServer() {
 
   app.post('/api/generate', rateLimitMiddleware, validateGenerateInput, async (req, res) => {
     try {
-      const { model, question, shape, recentAnswers, highThinking } = req.body;
+      const { model, question, shape, recentAnswers, recentIdeas, highThinking } = req.body;
       const requestedModel = model || 'gemini-3.5-flash';
 
       let shapeInstruction = '';
@@ -140,11 +149,25 @@ async function startServer() {
         ? `\n\nCRITICAL: Do NOT repeat these recently stated points/answers:\n- ${recentAnswers.slice(-15).join('\n- ')}`
         : '';
 
-      const fullPrompt = `${question}\n\n${shapeInstruction}${avoidListStr}\n\nMake sure this response brings up a fresh angle or distinct point not covered in the avoid list.`;
+      const avoidIdeasStr = recentIdeas && recentIdeas.length > 0
+        ? `\n\nDo not reuse any of these core ideas: ${recentIdeas.slice(-30).join(', ')}.`
+        : '';
 
-      const config: any = {};
+      const fullPrompt = `${question}\n\n${shapeInstruction}${avoidListStr}${avoidIdeasStr}\n\ncoreIdea is a 4 to 8 word label for the specific argument, method, or framework your answer uses. Make sure this response brings up a fresh angle or distinct point not covered in the avoid list.`;
+
+      const config: any = {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            answer: { type: Type.STRING, description: 'The generated prose response.' },
+            coreIdea: { type: Type.STRING, description: 'A 4 to 8 word label for the specific argument, method, or framework used.' }
+          },
+          required: ['answer', 'coreIdea']
+        }
+      };
+
       if (highThinking) {
-        // Fix 2: Keep thinkingConfig with thinkingLevel HIGH, set maxOutputTokens to 8192, do not send thinkingBudget
         config.thinkingConfig = { thinkingLevel: ThinkingLevel.HIGH };
         config.maxOutputTokens = 8192;
       } else {
@@ -152,7 +175,6 @@ async function startServer() {
         config.temperature = 1.0;
       }
 
-      // Fix 4: Chain starts with user-selected model, followed by default fallbacks (deduplicated)
       const modelsToTry = [requestedModel, ...DEFAULT_FALLBACK_MODELS.filter(m => m !== requestedModel)];
       let response: any = null;
       let usedModel = requestedModel;
@@ -171,46 +193,51 @@ async function startServer() {
             config,
           });
 
-          // Fix 4: Do not switch models for an empty response. Retry once on the same model with maxOutputTokens 2048.
-          if ((!response.text || response.text.trim() === '') && response.candidates?.[0]?.finishReason) {
-            const finishReason = response.candidates[0].finishReason;
-            if (finishReason !== 'STOP') {
-              // Return error naming the finishReason (e.g. SAFETY, MAX_TOKENS)
-              return res.status(422).json({
-                error: `Model returned empty response with finishReason: ${finishReason}`,
-                finishReason,
-                modelUsed: tryModel
-              });
-            }
+          // Parse JSON and validate answer & coreIdea fields
+          let parsed: any = null;
+          let parseError: any = null;
+          try {
+            parsed = JSON.parse(response.text || '{}');
+          } catch (pe) {
+            parseError = pe;
+          }
 
+          if (!parsed || typeof parsed.answer !== 'string' || typeof parsed.coreIdea !== 'string') {
             // Retry once on the same model with maxOutputTokens 2048
             const retryConfig = { ...config, maxOutputTokens: 2048 };
-            response = await ai.models.generateContent({
-              model: tryModel,
-              contents: fullPrompt,
-              config: retryConfig,
-            });
-
-            if (!response.text || response.text.trim() === '') {
-              const secondReason = response.candidates?.[0]?.finishReason || 'EMPTY';
-              return res.status(422).json({
-                error: `Model returned empty response after retry (finishReason: ${secondReason})`,
-                finishReason: secondReason,
-                modelUsed: tryModel
+            try {
+              const retryResponse = await ai.models.generateContent({
+                model: tryModel,
+                contents: fullPrompt,
+                config: retryConfig,
               });
+              parsed = JSON.parse(retryResponse.text || '{}');
+              response = retryResponse;
+            } catch (re) {
+              parseError = re;
             }
           }
 
-          if (response && response.text && response.text.trim() !== '') {
-            break;
+          if (!parsed || typeof parsed.answer !== 'string' || typeof parsed.coreIdea !== 'string') {
+            const finishReason = response?.candidates?.[0]?.finishReason || 'UNKNOWN';
+            // Do not switch models for malformed output. Return 500 with error "Malformed model output (finishReason X)"
+            return res.status(500).json({ error: `Malformed model output (finishReason ${finishReason})` });
+          }
+
+          if (parsed && parsed.answer && parsed.coreIdea) {
+            return res.json({
+              text: parsed.answer,
+              coreIdea: parsed.coreIdea,
+              finishReason: response.candidates?.[0]?.finishReason,
+              modelUsed: usedModel,
+              fallbackUsed,
+            });
           }
         } catch (err: any) {
           lastError = err;
           const status = err.status || err.code || 500;
           const errMsg = (err.message || '').toLowerCase();
 
-          // Fix 4: Stop immediately on invalid API key errors (401/403 auth) and on 400 client errors.
-          // Continue on 429, 503, and on 403 or 404 responses that refer to model availability.
           const isInvalidKey = status === 401 || errMsg.includes('api key') || errMsg.includes('unauthorized') || errMsg.includes('invalid credentials');
           const isBadRequest = status === 400 && !errMsg.includes('model') && !errMsg.includes('quota');
 
@@ -229,13 +256,14 @@ async function startServer() {
         }
       }
 
-      if (!response || !response.text || response.text.trim() === '') {
+      if (!response || !response.text) {
         throw lastError || new Error('All fallback models exhausted or returned empty content.');
       }
 
-      const text = response.text || '';
+      const parsed = JSON.parse(response.text || '{}');
       return res.json({
-        text,
+        text: parsed.answer || response.text,
+        coreIdea: parsed.coreIdea || 'General perspective',
         finishReason: response.candidates?.[0]?.finishReason,
         modelUsed: usedModel,
         fallbackUsed,
@@ -289,22 +317,30 @@ Reply with ONLY valid JSON:
     }
   });
 
+  // Change 2: /api/embed accepts { texts } array of 1 to 4 strings, returns { embeddings } array of number arrays
   app.post('/api/embed', rateLimitMiddleware, async (req, res) => {
     try {
-      const { text } = req.body;
-      if (!text) {
-        return res.status(400).json({ error: 'Text required for embedding' });
+      const { texts } = req.body;
+      if (!texts || !Array.isArray(texts) || texts.length === 0 || texts.length > 4) {
+        return res.status(400).json({ error: 'texts must be an array of 1 to 4 strings.' });
       }
+      for (const t of texts) {
+        if (typeof t !== 'string' || t.length > 2000) {
+          return res.status(400).json({ error: 'Each text must be a string of at most 2000 characters.' });
+        }
+      }
+
       const response = await ai.models.embedContent({
         model: 'gemini-embedding-001',
-        contents: text,
+        contents: texts,
         config: {
           outputDimensionality: 768,
           taskType: 'SEMANTIC_SIMILARITY' as any,
         },
       });
-      const embedding = response.embeddings?.[0]?.values || [];
-      return res.json({ embedding });
+
+      const embeddings = (response.embeddings || []).map((e: any) => e.values || []);
+      return res.json({ embeddings });
     } catch (err: any) {
       console.error('Embedding error:', err);
       const status = err?.status || 500;

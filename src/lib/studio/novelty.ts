@@ -54,54 +54,103 @@ export interface JudgeResult {
   isNovel: boolean;
   reason?: string;
   similarityScore?: number;
+  tagSimilarity?: number | null;
   closestMatchId?: string;
+  closestMatchIndex?: number | null;
   closestMatchText?: string;
 }
+
+const normIdea = (idea?: string | null) => (idea || '').trim().toLowerCase();
 
 export function judgeNovelty(
   newText: string,
   newEmbedding: number[],
+  newCoreIdea: string | null | undefined,
+  newTagEmbedding: number[] | undefined,
   keptEntries: AnswerEntry[],
   embeddingThreshold: number,
-  localThreshold: number
+  localThreshold: number,
+  tagThreshold: number
 ): JudgeResult {
+  // 1. Check exact normalized coreIdea match
+  const newIdeaNorm = normIdea(newCoreIdea);
+  if (newIdeaNorm) {
+    for (const kept of keptEntries) {
+      if (normIdea(kept.coreIdea) === newIdeaNorm) {
+        return {
+          isNovel: false,
+          reason: `Same core idea as #${kept.index}`,
+          similarityScore: 1.0,
+          tagSimilarity: 1.0,
+          closestMatchId: kept.id,
+          closestMatchIndex: kept.index,
+          closestMatchText: kept.text,
+        };
+      }
+    }
+  }
+
+  // 2. Check tagEmbedding cosine similarity against tagThreshold
+  let maxTagSim = 0;
+  let tagClosestMatch: AnswerEntry | null = null;
+  if (newTagEmbedding && newTagEmbedding.length > 0) {
+    for (const kept of keptEntries) {
+      if (kept.tagEmbedding && kept.tagEmbedding.length > 0) {
+        const tSim = cosineSimilarity(newTagEmbedding, kept.tagEmbedding);
+        if (tSim > maxTagSim) {
+          maxTagSim = tSim;
+          tagClosestMatch = kept;
+        }
+      }
+    }
+  }
+
+  if (maxTagSim >= tagThreshold && tagClosestMatch) {
+    return {
+      isNovel: false,
+      reason: `Same core idea as #${tagClosestMatch.index} (tag similarity ${(maxTagSim * 100).toFixed(0)}%)`,
+      similarityScore: maxTagSim,
+      tagSimilarity: maxTagSim,
+      closestMatchId: tagClosestMatch.id,
+      closestMatchIndex: tagClosestMatch.index,
+      closestMatchText: tagClosestMatch.text,
+    };
+  }
+
+  // 3. Existing embedding and local word overlap similarity
   const newWords = contentWords(newText);
   let maxEmbSim = 0;
   let maxLocSim = 0;
   let closestMatch: AnswerEntry | null = null;
-  let matchType = '';
 
   for (const kept of keptEntries) {
-    // 1. Embedding similarity
     if (newEmbedding.length > 0 && kept.embedding && kept.embedding.length > 0) {
       const embSim = cosineSimilarity(newEmbedding, kept.embedding);
       if (embSim > maxEmbSim) {
         maxEmbSim = embSim;
         closestMatch = kept;
-        matchType = 'embedding';
       }
     }
 
-    // 2. Local similarity
     if (kept.wordSet) {
       const locSim = jaccardSimilarity(newWords, new Set(kept.wordSet));
       if (locSim > maxLocSim) {
         maxLocSim = locSim;
         if (locSim >= maxEmbSim) {
           closestMatch = kept;
-          matchType = 'local';
         }
       }
     }
   }
 
-  // Check against thresholds
   if (maxEmbSim >= embeddingThreshold) {
     return {
       isNovel: false,
       reason: `Too similar semantically (similarity: ${(maxEmbSim * 100).toFixed(1)}% >= threshold ${(embeddingThreshold * 100).toFixed(0)}%)`,
       similarityScore: maxEmbSim,
+      tagSimilarity: maxTagSim > 0 ? maxTagSim : null,
       closestMatchId: closestMatch?.id,
+      closestMatchIndex: closestMatch?.index,
       closestMatchText: closestMatch?.text,
     };
   }
@@ -111,10 +160,19 @@ export function judgeNovelty(
       isNovel: false,
       reason: `Too similar in wording (overlap: ${(maxLocSim * 100).toFixed(1)}% >= threshold ${(localThreshold * 100).toFixed(0)}%)`,
       similarityScore: maxLocSim,
+      tagSimilarity: maxTagSim > 0 ? maxTagSim : null,
       closestMatchId: closestMatch?.id,
+      closestMatchIndex: closestMatch?.index,
       closestMatchText: closestMatch?.text,
     };
   }
 
-  return { isNovel: true, similarityScore: Math.max(maxEmbSim, maxLocSim) };
+  return {
+    isNovel: true,
+    similarityScore: Math.max(maxEmbSim, maxLocSim),
+    tagSimilarity: maxTagSim > 0 ? maxTagSim : null,
+    closestMatchId: closestMatch?.id,
+    closestMatchIndex: closestMatch?.index,
+    closestMatchText: closestMatch?.text,
+  };
 }

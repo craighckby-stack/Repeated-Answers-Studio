@@ -51,28 +51,30 @@ export async function generateAnswer(
   question: string,
   shape: string,
   recentAnswers: string[],
+  recentIdeas: string[],
   highThinking: boolean
-): Promise<{ text: string; finishReason?: string; modelUsed?: string; fallbackUsed?: boolean }> {
+): Promise<{ text: string; coreIdea: string; finishReason?: string; modelUsed?: string; fallbackUsed?: boolean }> {
   const data = await safeFetchJson('/api/generate', {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ model, question, shape, recentAnswers, highThinking }),
+    body: JSON.stringify({ model, question, shape, recentAnswers, recentIdeas, highThinking }),
   });
   return {
     text: data.text,
+    coreIdea: data.coreIdea,
     finishReason: data.finishReason,
     modelUsed: data.modelUsed,
     fallbackUsed: data.fallbackUsed,
   };
 }
 
-export async function getEmbedding(text: string): Promise<number[]> {
+export async function getEmbeddings(texts: string[]): Promise<number[][]> {
   const data = await safeFetchJson('/api/embed', {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ texts }),
   });
-  return data.embedding || [];
+  return data.embeddings || [];
 }
 
 export async function llmNoveltyJudge(

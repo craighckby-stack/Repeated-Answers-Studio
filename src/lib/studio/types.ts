@@ -12,6 +12,7 @@ export interface StudioSettings {
   target: number;
   embeddingThreshold: number; // 0.5 to 0.99 (default 0.85)
   localThreshold: number;     // 0.5 to 0.99 (default 0.75)
+  tagThreshold: number;       // 0.5 to 0.99 (default 0.90)
   maxMisses: number;          // consecutive rejection limit before pause
   perCommit: number;          // batch size for GitHub commit
   rememberSecrets: boolean;   // off by default
@@ -38,6 +39,7 @@ export const DEFAULT_SETTINGS: StudioSettings = {
   target: 100,
   embeddingThreshold: 0.85,
   localThreshold: 0.75,
+  tagThreshold: 0.90,
   maxMisses: 20,
   perCommit: 25,
   rememberSecrets: false,
@@ -48,6 +50,19 @@ export const DEFAULT_SETTINGS: StudioSettings = {
   useLlmJudge: true,
 };
 
+export function clampSettings(settings: StudioSettings): StudioSettings {
+  const clamp = (val: number, min: number, max: number) => Math.max(min, Math.min(max, isNaN(val) ? min : val));
+  return {
+    ...settings,
+    embeddingThreshold: clamp(settings.embeddingThreshold, 0.5, 0.99),
+    localThreshold: clamp(settings.localThreshold, 0.5, 0.99),
+    tagThreshold: clamp(settings.tagThreshold, 0.5, 0.99),
+    target: Math.max(1, Math.round(settings.target || 1)),
+    maxMisses: Math.max(1, Math.round(settings.maxMisses || 1)),
+    perCommit: Math.max(1, Math.round(settings.perCommit || 1)),
+  };
+}
+
 export interface AnswerEntry {
   id: string;
   runId: string;
@@ -55,13 +70,19 @@ export interface AnswerEntry {
   text: string;
   timestamp: number;
   embedding?: number[];
+  tagEmbedding?: number[];
   wordSet?: string[];
-  status: 'kept' | 'rejected';
+  status: 'kept' | 'rejected' | 'error';
+  coreIdea?: string | null;
   reason?: string;
   similarityScore?: number;
+  tagSimilarity?: number | null;
   closestMatchId?: string;
+  closestMatchIndex?: number | null;
   closestMatchText?: string;
+  selectedModel?: string;
   modelUsed?: string;
+  fallbackUsed?: boolean;
 }
 
 export interface RunState {
@@ -71,6 +92,7 @@ export interface RunState {
   target: number;
   keptCount: number;
   rejectedCount: number;
+  errorCount: number;
   consecutiveMisses: number;
   entries: AnswerEntry[];
   error?: string;

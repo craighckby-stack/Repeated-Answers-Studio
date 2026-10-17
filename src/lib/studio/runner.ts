@@ -4,7 +4,7 @@
  */
 
 import { AnswerEntry, StudioSettings } from './types';
-import { checkModel, generateAnswer, getEmbedding, llmNoveltyJudge } from './gemini';
+import { checkModel, generateAnswer, getEmbeddings, llmNoveltyJudge } from './gemini';
 import { judgeNovelty, normalizeVector, contentWords } from './novelty';
 import { generateSandboxAnswer, getSandboxCapacity } from './sandbox';
 import { commitBatchToGitHub, validateRepoFormat } from './github';
@@ -15,6 +15,7 @@ export interface RunnerCallbacks {
     status: 'idle' | 'running' | 'paused' | 'completed' | 'stopped' | 'rate_limited';
     keptCount: number;
     rejectedCount: number;
+    errorCount: number;
     consecutiveMisses: number;
     entries: AnswerEntry[];
     error?: string;
@@ -98,10 +99,13 @@ export class StudioRunner {
   }
 
   private notify(error?: string) {
+    const errorCount = this.entries.filter(e => e.status === 'error').length;
+    const rejectedCount = this.entries.filter(e => e.status === 'rejected').length;
     this.callbacks.onStateUpdate({
       status: this.status,
       keptCount: this.keptEntries.length,
-      rejectedCount: this.attemptIndex - this.keptEntries.length,
+      rejectedCount,
+      errorCount,
       consecutiveMisses: this.consecutiveMisses,
       entries: [...this.entries],
       error,
@@ -131,7 +135,9 @@ export class StudioRunner {
 
       try {
         let text = '';
+        let coreIdea: string | null = null;
         let modelUsed: string | undefined = undefined;
+        let fallbackUsed: boolean | undefined = undefined;
 
         if (this.settings.engine === 'sandbox') {
           const cap = getSandboxCapacity();
@@ -140,27 +146,58 @@ export class StudioRunner {
             this.notify('Sandbox engine reached maximum distinct answers capacity.');
             break;
           }
-          text = generateSandboxAnswer(currentAttempt - 1);
+          const sandboxRes = generateSandboxAnswer(currentAttempt - 1);
+          text = sandboxRes.text;
+          coreIdea = sandboxRes.coreIdea;
           modelUsed = 'sandbox';
           await new Promise(r => setTimeout(r, 50)); // simulate brief tick
         } else {
-          // Gemini generation with backoff
-          const genResult = await this.generateWithBackoff();
+          const recentIdeas = this.keptEntries
+            .map(e => e.coreIdea)
+            .filter((i): i is string => Boolean(i))
+            .slice(-30);
+
+          const genResult = await this.generateWithBackoff(recentIdeas);
           text = genResult.text;
+          coreIdea = genResult.coreIdea;
           modelUsed = genResult.modelUsed;
+          fallbackUsed = genResult.fallbackUsed;
         }
 
         if (!text || text.trim() === '') {
           this.consecutiveMisses++;
+          const errEntry: AnswerEntry = {
+            id: `${this.runId}-${currentAttempt}`,
+            runId: this.runId,
+            index: currentAttempt,
+            text: '',
+            timestamp: Date.now(),
+            status: 'error',
+            reason: 'Empty model output',
+            selectedModel: this.settings.model,
+            modelUsed,
+          };
+          this.entries.push(errEntry);
+          this.batchBuffer.push(errEntry);
+          if (this.batchBuffer.length >= this.settings.perCommit) {
+            await this.flushBatch(false);
+          }
+          this.notify();
           continue;
         }
 
-        // Fix 1: When engine is "sandbox", do not compute fake embedding. Pass empty embedding [] so judgeNovelty uses only word overlap.
+        // Change 2: Sandbox skips embedding, Gemini embeds [text, coreIdea] in one call
         let embedding: number[] = [];
+        let tagEmbedding: number[] = [];
+        let tagSimilarity: number | null = null;
+
         if (this.settings.engine === 'gemini') {
           try {
-            const rawEmb = await getEmbedding(text);
-            embedding = normalizeVector(rawEmb);
+            const rawEmbs = await getEmbeddings([text, coreIdea || '']);
+            if (rawEmbs && rawEmbs.length >= 2) {
+              if (rawEmbs[0] && rawEmbs[0].length > 0) embedding = normalizeVector(rawEmbs[0]);
+              if (rawEmbs[1] && rawEmbs[1].length > 0) tagEmbedding = normalizeVector(rawEmbs[1]);
+            }
           } catch (e) {
             console.warn('Embedding generation warning:', e);
           }
@@ -168,20 +205,24 @@ export class StudioRunner {
 
         const wordSet = Array.from(contentWords(text));
 
-        // 1. Judge novelty against kept entries (Embedding + Jaccard)
+        // Judge novelty against kept entries
         const judge = judgeNovelty(
           text,
           embedding,
+          coreIdea,
+          tagEmbedding,
           this.keptEntries,
           this.settings.embeddingThreshold,
-          this.settings.localThreshold
+          this.settings.localThreshold,
+          this.settings.tagThreshold
         );
 
         let isNovel = judge.isNovel;
         let reason = judge.reason;
         let similarityScore = judge.similarityScore;
+        tagSimilarity = judge.tagSimilarity ?? null;
 
-        // 2. Final LLM-as-judge validation step if basic filter passed and useLlmJudge is enabled
+        // Final LLM-as-judge validation step if basic filter passed and useLlmJudge is enabled
         if (isNovel && this.settings.useLlmJudge && this.keptEntries.length > 0 && this.settings.engine === 'gemini') {
           const closest = this.keptEntries.slice(-5).map(e => e.text);
           const llmResult = await llmNoveltyJudge(text, closest, this.settings.model);
@@ -198,27 +239,33 @@ export class StudioRunner {
           text,
           timestamp: Date.now(),
           embedding,
+          tagEmbedding,
           wordSet,
           status: isNovel ? 'kept' : 'rejected',
+          coreIdea,
           reason,
           similarityScore,
+          tagSimilarity,
           closestMatchId: judge.closestMatchId,
+          closestMatchIndex: judge.closestMatchIndex,
           closestMatchText: judge.closestMatchText,
+          selectedModel: this.settings.model,
           modelUsed,
+          fallbackUsed,
         };
 
         this.entries.push(entry);
+        this.batchBuffer.push(entry); // Change 3: GitHub batch buffer receives every attempt (kept, rejected, error)
 
         if (isNovel) {
           this.keptEntries.push(entry);
-          this.batchBuffer.push(entry);
           this.consecutiveMisses = 0;
-
-          if (this.batchBuffer.length >= this.settings.perCommit) {
-            await this.flushBatch(false);
-          }
         } else {
           this.consecutiveMisses++;
+        }
+
+        if (this.batchBuffer.length >= this.settings.perCommit) {
+          await this.flushBatch(false);
         }
 
         this.callbacks.onEntryAdded(entry);
@@ -244,6 +291,21 @@ export class StudioRunner {
           break;
         } else {
           this.consecutiveMisses++;
+          const errEntry: AnswerEntry = {
+            id: `${this.runId}-${currentAttempt}`,
+            runId: this.runId,
+            index: currentAttempt,
+            text: '',
+            timestamp: Date.now(),
+            status: 'error',
+            reason: err.message || 'Error in run iteration',
+            selectedModel: this.settings.model,
+          };
+          this.entries.push(errEntry);
+          this.batchBuffer.push(errEntry);
+          if (this.batchBuffer.length >= this.settings.perCommit) {
+            await this.flushBatch(false);
+          }
           this.notify(err.message || 'Error in run iteration');
           await new Promise(r => setTimeout(r, 1000));
         }
@@ -251,10 +313,10 @@ export class StudioRunner {
     }
   }
 
-  private async generateWithBackoff(): Promise<{ text: string; modelUsed?: string }> {
+  private async generateWithBackoff(recentIdeas: string[]): Promise<{ text: string; coreIdea: string; modelUsed?: string; fallbackUsed?: boolean }> {
     let delay = 2000;
     let totalElapsed = 0;
-    const maxElapsed = 15000; // 15 seconds max backoff for transient issues
+    const maxElapsed = 15000;
 
     while (totalElapsed < maxElapsed) {
       try {
@@ -264,9 +326,10 @@ export class StudioRunner {
           this.settings.question,
           this.settings.shape,
           recentTexts,
+          recentIdeas,
           this.settings.highThinking
         );
-        return { text: result.text, modelUsed: result.modelUsed };
+        return { text: result.text, coreIdea: result.coreIdea, modelUsed: result.modelUsed, fallbackUsed: result.fallbackUsed };
       } catch (err: any) {
         const status = err.status || err.code || 500;
         if (

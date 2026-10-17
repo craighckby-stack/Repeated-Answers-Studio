@@ -10,12 +10,14 @@ import {
   MODELS,
   AnswerEntry,
   RunState,
+  clampSettings,
 } from '../../lib/studio/types';
 import { StudioRunner } from '../../lib/studio/runner';
 import { loadSettings, saveSettings } from '../../lib/studio/storage';
 import { setAppAccessToken } from '../../lib/studio/gemini';
 import { validateRepoFormat } from '../../lib/studio/github';
 import { getSandboxCapacity } from '../../lib/studio/sandbox';
+import { toAttemptsJsonl, toKeptMarkdown } from '../../lib/studio/export';
 import {
   Play,
   Pause,
@@ -53,6 +55,7 @@ export function StudioApp() {
     target: DEFAULT_SETTINGS.target,
     keptCount: 0,
     rejectedCount: 0,
+    errorCount: 0,
     consecutiveMisses: 0,
     entries: [],
     lastCommitBatch: 1,
@@ -67,9 +70,10 @@ export function StudioApp() {
   // Load settings on mount & sync access token
   useEffect(() => {
     loadSettings().then((loaded) => {
-      setSettings(loaded);
-      setAppAccessToken(loaded.appAccessToken);
-      setRunState((prev) => ({ ...prev, target: loaded.target }));
+      const clamped = clampSettings(loaded);
+      setSettings(clamped);
+      setAppAccessToken(clamped.appAccessToken);
+      setRunState((prev) => ({ ...prev, target: clamped.target }));
     });
   }, []);
 
@@ -102,7 +106,7 @@ export function StudioApp() {
   }, []);
 
   const handleSettingChange = (key: keyof StudioSettings, value: any) => {
-    const updated = { ...settings, [key]: value };
+    const updated = clampSettings({ ...settings, [key]: value });
     setSettings(updated);
     saveSettings(updated);
     if (key === 'appAccessToken') {
@@ -159,9 +163,7 @@ export function StudioApp() {
   const keptEntries = runState.entries.filter((e) => e.status === 'kept');
 
   const exportJSONL = () => {
-    const jsonl = keptEntries
-      .map((e) => JSON.stringify({ index: e.index, text: e.text, timestamp: e.timestamp, modelUsed: e.modelUsed }))
-      .join('\n');
+    const jsonl = toAttemptsJsonl({ runState, settings });
     const blob = new Blob([jsonl], { type: 'application/x-jsonlines' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -172,8 +174,7 @@ export function StudioApp() {
   };
 
   const exportMarkdown = () => {
-    const md = `# Repeated Answers Studio: ${settings.question}\n\n` +
-      keptEntries.map((e, i) => `### ${i + 1}. Attempt #${e.index}${e.modelUsed ? ` (${e.modelUsed})` : ''}\n${e.text}\n`).join('\n');
+    const md = toKeptMarkdown({ runState, settings });
     const blob = new Blob([md], { type: 'text/markdown' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -439,6 +440,23 @@ export function StudioApp() {
                 />
               </div>
 
+              <div>
+                <div className="flex justify-between text-xs text-slate-400 mb-1">
+                  <span>Core Idea Threshold</span>
+                  <span className="font-mono text-indigo-400">{(settings.tagThreshold * 100).toFixed(0)}%</span>
+                </div>
+                <input
+                  type="range"
+                  min={0.5}
+                  max={0.99}
+                  step={0.01}
+                  value={settings.tagThreshold}
+                  onChange={(e) => handleSettingChange('tagThreshold', parseFloat(e.target.value))}
+                  disabled={runState.status === 'running'}
+                  className="w-full accent-indigo-500 bg-slate-800 h-1.5 rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+
               <div className="flex items-center justify-between pt-2 border-t border-slate-800">
                 <div>
                   <span className="text-xs font-medium text-slate-300 block">LLM-as-Judge Validation</span>
@@ -526,7 +544,7 @@ export function StudioApp() {
                 <div className="text-2xl font-bold text-white mt-1 flex items-baseline gap-2">
                   <span>{runState.keptCount}</span>
                   <span className="text-sm font-normal text-slate-400">/ {runState.target} kept</span>
-                  <span className="text-xs text-slate-500 font-normal">({runState.rejectedCount} rejected)</span>
+                  <span className="text-xs text-slate-500 font-normal">({runState.rejectedCount} rejected {runState.errorCount > 0 ? `, ${runState.errorCount} errors` : ''})</span>
                 </div>
               </div>
 
@@ -650,6 +668,11 @@ export function StudioApp() {
                         </span>
                         <span>{new Date(e.timestamp).toLocaleTimeString()}</span>
                       </div>
+                      {e.coreIdea && (
+                        <div className="text-xs font-medium text-indigo-300/90 bg-indigo-950/30 px-2.5 py-1 rounded-lg inline-block">
+                          Core Idea: {e.coreIdea}
+                        </div>
+                      )}
                       <p className="text-slate-200 text-sm whitespace-pre-wrap leading-relaxed">{e.text}</p>
                     </div>
                   ))
@@ -669,20 +692,31 @@ export function StudioApp() {
                       className={`p-3.5 rounded-xl border text-xs space-y-1.5 ${
                         e.status === 'kept'
                           ? 'bg-emerald-950/10 border-emerald-900/30 text-slate-300'
+                          : e.status === 'error'
+                          ? 'bg-amber-950/10 border-amber-900/30 text-slate-300'
                           : 'bg-rose-950/10 border-rose-900/30 text-slate-400'
                       }`}
                     >
                       <div className="flex items-center justify-between">
-                        <span className={`font-semibold uppercase tracking-wider flex items-center gap-2 ${e.status === 'kept' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        <span className={`font-semibold uppercase tracking-wider flex items-center gap-2 ${
+                          e.status === 'kept' ? 'text-emerald-400' : e.status === 'error' ? 'text-amber-400' : 'text-rose-400'
+                        }`}>
                           <span>Attempt #{e.index} — {e.status}</span>
                           {e.modelUsed && <span className="text-[10px] text-slate-400 font-mono lowercase">({e.modelUsed})</span>}
                         </span>
                         <span className="text-slate-500">{new Date(e.timestamp).toLocaleTimeString()}</span>
                       </div>
-                      <p className="text-slate-200 line-clamp-2">{e.text}</p>
+                      {e.text ? <p className="text-slate-200 line-clamp-2">{e.text}</p> : null}
+                      {e.coreIdea && (
+                        <p className="text-[11px] text-indigo-300 font-medium">
+                          Core Idea: {e.coreIdea}
+                        </p>
+                      )}
                       {e.reason && (
-                        <p className="text-[11px] text-rose-300/80 italic font-mono bg-rose-950/30 px-2 py-1 rounded">
-                          Rejection: {e.reason}
+                        <p className={`text-[11px] italic font-mono px-2 py-1 rounded ${
+                          e.status === 'error' ? 'text-amber-300/80 bg-amber-950/30' : 'text-rose-300/80 bg-rose-950/30'
+                        }`}>
+                          {e.status === 'error' ? 'Error: ' : 'Rejection: '}{e.reason}
                         </p>
                       )}
                     </div>
@@ -698,17 +732,17 @@ export function StudioApp() {
                     <div className="flex gap-3 pt-2">
                       <button
                         onClick={exportJSONL}
-                        disabled={keptEntries.length === 0}
+                        disabled={runState.entries.length === 0}
                         className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs flex items-center gap-2 shadow transition disabled:opacity-50"
                       >
-                        <Download className="w-4 h-4" /> Download JSONL
+                        <Download className="w-4 h-4" /> Download JSONL (All Attempts)
                       </button>
                       <button
                         onClick={exportMarkdown}
                         disabled={keptEntries.length === 0}
                         className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs flex items-center gap-2 border border-slate-700 transition disabled:opacity-50"
                       >
-                        <Download className="w-4 h-4" /> Download Markdown
+                        <Download className="w-4 h-4" /> Download Kept Markdown
                       </button>
                     </div>
                   </div>

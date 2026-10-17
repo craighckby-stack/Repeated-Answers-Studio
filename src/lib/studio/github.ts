@@ -26,12 +26,20 @@ export async function commitBatchToGitHub(
   const cleanBranch = branch || 'main';
 
   const jsonlLines = entries.map(e => JSON.stringify({
-    id: e.id,
+    type: 'attempt',
+    runId: e.runId || runId,
     index: e.index,
+    status: e.status,
     text: e.text,
-    timestamp: e.timestamp,
-    reason: e.reason,
-    similarityScore: e.similarityScore
+    coreIdea: e.coreIdea || null,
+    reason: e.reason || null,
+    embeddingSimilarity: e.similarityScore ?? null,
+    tagSimilarity: e.tagSimilarity ?? null,
+    closestMatchIndex: e.closestMatchIndex ?? null,
+    timestamp: new Date(e.timestamp || Date.now()).toISOString(),
+    selectedModel: e.selectedModel,
+    modelUsed: e.modelUsed || e.selectedModel,
+    fallbackUsed: e.fallbackUsed ?? false,
   })).join('\n') + '\n';
 
   const batchFileName = `runs/${runId}/batch-${String(batchIndex).padStart(4, '0')}.jsonl`;
@@ -62,7 +70,7 @@ export async function commitBatchToGitHub(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        message: `Add run ${runId} batch ${batchIndex} kept answers`,
+        message: `Add run ${runId} batch ${batchIndex} attempts`,
         content: contentBase64,
         branch: cleanBranch,
         ...(sha ? { sha } : {}),
@@ -75,7 +83,7 @@ export async function commitBatchToGitHub(
     }
 
     // 3. Update manifest.json
-    await updateManifest(token, owner, repo, cleanBranch, runId, batchIndex);
+    await updateManifest(token, owner, repo, cleanBranch, runId, batchIndex, entries);
 
     return { success: true };
   } catch (err: any) {
@@ -89,7 +97,8 @@ async function updateManifest(
   repo: string,
   branch: string,
   runId: string,
-  latestBatch: number
+  latestBatch: number,
+  entries: AnswerEntry[]
 ): Promise<void> {
   const manifestPath = `runs/${runId}/manifest.json`;
   const manifestUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${manifestPath}`;
@@ -120,10 +129,20 @@ async function updateManifest(
       existingBatches.sort((a, b) => a - b);
     }
 
+    const keptCount = entries.filter(e => e.status === 'kept').length;
+    const rejectedCount = entries.filter(e => e.status === 'rejected').length;
+    const errorCount = entries.filter(e => e.status === 'error').length;
+
     const manifestObj = {
+      type: 'header',
+      schema: 'repeated-answers/v2',
       runId,
       updatedAt: new Date().toISOString(),
       batches: existingBatches,
+      totalAttemptsInBatch: entries.length,
+      keptInBatch: keptCount,
+      rejectedInBatch: rejectedCount,
+      errorsInBatch: errorCount,
     };
 
     const contentBase64 = btoa(unescape(encodeURIComponent(JSON.stringify(manifestObj, null, 2))));
@@ -136,7 +155,7 @@ async function updateManifest(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        message: `Update manifest for run ${runId}`,
+        message: `Update manifest for run ${runId} batch ${latestBatch}`,
         content: contentBase64,
         branch,
         ...(sha ? { sha } : {}),
