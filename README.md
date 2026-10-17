@@ -1,28 +1,87 @@
 # Repeated Answers Studio
 
-Repeated Answers Studio is a web application built with React, TypeScript, Tailwind CSS, and the Google Gemini API. It allows you to query Gemini models repeatedly on a single research prompt while filtering out semantic duplicates and wording overlaps to compile a curated list of distinct perspectives and insights.
+> **Explore unique points on any topic by querying Gemini repeatedly with automated semantic novelty filtering and GitHub sync.**
 
 ---
 
-## What It Does
+## Why Repeated Answers Studio?
 
-- **Repeated AI Querying**: Automatically runs iterative generations against Gemini models.
-- **Novelty Filtering**: Employs dual novelty checks:
-  1. **Semantic Cosine Similarity** (using `gemini-embedding-001` vectors).
-  2. **Local Word Jaccard Overlap** (checking vocabulary similarity).
-- **Dual Engines**:
-  - **Gemini Engine**: AI-powered queries with model selection, high thinking mode, and automatic fallback across Gemini models.
-  - **Sandbox Engine**: Deterministic template engine for offline testing and demonstration.
-- **Export & Sync**: Export kept insights as JSONL or Markdown, copy to clipboard, or sync batches directly to a GitHub repository.
+When prompting LLMs on complex research questions, brainstorming, or policy analysis, standard generations quickly plateau into repetitive phrasing and common knowledge. **Repeated Answers Studio** solves this by automating iterative queries against Gemini, comparing every generated answer against all previously kept insights using dual semantic and lexical novelty filters, and curating only genuinely distinct perspectives.
 
 ---
 
-## How to Use
+## Features
 
-1. **Enter Your Research Prompt**: Type a broad question or topic in the prompt box (e.g., *"What are the hidden risks of space colonization?"*), or pick one of the built-in presets.
-   - *Note on factual queries*: If you test a strict mathematical question like *"What is one plus one?"*, the model will quickly exhaust unique variations after the first correct answer, leading to semantic rejections (as seen in the screenshots). For best results, use exploratory or multi-faceted philosophical and scientific questions!
-2. **Configure Settings**:
-   - Choose your engine and model (`gemini-3.5-flash`, `gemini-4-argon`, etc.).
-   - Adjust the **Target Kept** count and **Embedding/Local Similarity Thresholds**.
-3. **Run & Monitor**: Click **Start Run**. Watch the live progress bar, review the attempt log to see why answers were kept or rejected, and inspect similarity metrics.
-4. **Export**: Once your insights are collected, switch to the **Export & Share** tab to download your results in JSONL or Markdown format.
+- **Iterative AI Querying**: Automatically runs continuous generation loops against Gemini models.
+- **Dual Novelty Filters**:
+  - **Semantic Cosine Similarity**: Evaluates 768-dimension embedding vectors (`gemini-embedding-001`).
+  - **Local Word Jaccard Overlap**: Ensures vocabulary diversity.
+- **Automatic Model Fallback**: Gracefully falls back across Gemini models (`gemini-3.5-flash-lite`, `gemini-3.5-flash`, `gemini-4-argon`) if quotas or rate limits are encountered.
+- **Sandbox Engine**: A fully offline, deterministic test mode with capped distinct answer capacity.
+- **GitHub Repository Sync**: Commits batches automatically to `runs/<run-id>/batch-0001.jsonl` and updates `manifest.json`.
+- **Flexible Export**: Download compiled insights as **JSONL** or **Markdown**.
+
+---
+
+## Architecture Overview
+
+| Layer | Technology / Implementation | Purpose |
+| --- | --- | --- |
+| **Frontend** | React 19, TypeScript, Tailwind CSS, Lucide Icons | Responsive single-page dashboard with real-time progress, attempt logs, and export tools. |
+| **Backend** | Node.js, Express (`server.ts`), `@google/genai` | Secure server-side proxy handling Gemini content generation, embeddings, and automatic model fallback. |
+| **Persistence** | IndexedDB (`storage.ts`) | Client-side storage for settings, run archives, and vector memories. |
+| **Sync** | GitHub Contents API (`github.ts`) | Automated batch commits and manifest tracking. |
+
+---
+
+## Setup & Running Locally
+
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/your-username/repeated-answers-studio.git
+   cd repeated-answers-studio
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   npm install
+   ```
+
+3. **Configure environment variables**:
+   Create a `.env` file in the root directory (refer to `.env.example`):
+   ```env
+   GEMINI_API_KEY="your-gemini-api-key"
+   PORT=3000
+   ```
+
+4. **Run the development server**:
+   ```bash
+   npm run dev
+   ```
+   Open `http://localhost:3000` in your browser.
+
+---
+
+## Usage Guidance
+
+### Good Prompts (Exploratory & Multi-Faceted)
+- *"What are the hidden risks and long-term consequences of human space colonization?"*
+- *"Why do complex software architectures inevitably degenerate over time?"*
+- *"How can decentralized economies reshape global labor markets?"*
+
+### Prompts to Avoid (Factual / Single-Answer)
+- *"What is one plus one?"* (Factual queries have only one valid formulation and will immediately trigger semantic duplication rejections).
+
+---
+
+## Configuration & Notes
+
+- **Embedding & Local Thresholds**: Adjust the similarity sliders to control how strict novelty filtering is (higher threshold = stricter filtering).
+- **Free-Tier Limits**: Built-in automatic model fallback and rate-limit exponential backoff ensure smooth operation even on free-tier rate limits.
+- **API Security**: API keys and GitHub tokens remain strictly server-side by default, with an opt-in browser storage setting.
+
+---
+
+## License
+
+This project is open source and available under the [Apache-2.0 License](LICENSE).
