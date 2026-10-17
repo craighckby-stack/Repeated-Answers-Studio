@@ -1,0 +1,6 @@
+{
+  "name": "Repeated Answers Studio",
+  "description": "Explore unique points on any topic by querying Gemini repeatedly while filtering out repetitive answers, with local novelty checks and GitHub export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
