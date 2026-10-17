@@ -16,16 +16,28 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Fix 4: Default fallback list as server-side constant: gemini-3.5-flash-lite, then gemini-3.5-flash.
 const DEFAULT_FALLBACK_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.5-flash'];
 
-// Simple in-memory rate limiter per IP: 30 requests per minute
+// Rate limiter with configurable RATE_LIMIT_PER_MINUTE (default 60) and minute cleanup
 const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
+const rateLimitCleanupInterval = setInterval(() => {
+  const now = Date.now();
+  for (const [ip, record] of rateLimitMap.entries()) {
+    if (now > record.resetTime) {
+      rateLimitMap.delete(ip);
+    }
+  }
+}, 60 * 1000);
+if (rateLimitCleanupInterval.unref) {
+  rateLimitCleanupInterval.unref();
+}
+
 function rateLimitMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
   const ip = req.ip || req.socket.remoteAddress || 'unknown';
   const now = Date.now();
   const windowMs = 60 * 1000;
-  const maxReqs = 30;
+  const configuredLimit = parseInt(process.env.RATE_LIMIT_PER_MINUTE || '60', 10);
+  const maxReqs = isNaN(configuredLimit) ? 60 : configuredLimit;
 
   let record = rateLimitMap.get(ip);
   if (!record || now > record.resetTime) {
@@ -36,12 +48,11 @@ function rateLimitMiddleware(req: express.Request, res: express.Response, next: 
   }
 
   if (record.count > maxReqs) {
-    return res.status(429).json({ error: 'Rate limit exceeded (30 requests per minute max).' });
+    return res.status(429).json({ error: `Rate limit exceeded (${maxReqs} requests per minute max).` });
   }
   next();
 }
 
-// Fix 2: APP_ACCESS_TOKEN middleware
 function accessTokenMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
   const expectedToken = process.env.APP_ACCESS_TOKEN;
   if (expectedToken && expectedToken.trim() !== '') {
@@ -53,7 +64,6 @@ function accessTokenMiddleware(req: express.Request, res: express.Response, next
   next();
 }
 
-// Input validation middleware for generate
 function validateGenerateInput(req: express.Request, res: express.Response, next: express.NextFunction) {
   const { model, question, shape, recentAnswers, recentIdeas } = req.body;
 
@@ -99,6 +109,15 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '10mb' }));
 
+  if (process.env.TRUST_PROXY) {
+    const tp = process.env.TRUST_PROXY;
+    if (tp === 'true') app.set('trust proxy', true);
+    else if (tp === 'false') app.set('trust proxy', false);
+    else if (!isNaN(Number(tp))) app.set('trust proxy', Number(tp));
+    else app.set('trust proxy', tp);
+  }
+
+  app.use('/api', rateLimitMiddleware);
   app.use('/api', accessTokenMiddleware);
 
   const apiKey = process.env.GEMINI_API_KEY;
@@ -111,8 +130,7 @@ async function startServer() {
     },
   });
 
-  // API Routes
-  app.post('/api/check-model', rateLimitMiddleware, async (req, res) => {
+  app.post('/api/check-model', async (req, res) => {
     try {
       const { model } = req.body;
       const testModel = model || 'gemini-3.5-flash';
@@ -135,7 +153,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/generate', rateLimitMiddleware, validateGenerateInput, async (req, res) => {
+  app.post('/api/generate', validateGenerateInput, async (req, res) => {
     try {
       const { model, question, shape, recentAnswers, recentIdeas, highThinking } = req.body;
       const requestedModel = model || 'gemini-3.5-flash';
@@ -193,17 +211,12 @@ async function startServer() {
             config,
           });
 
-          // Parse JSON and validate answer & coreIdea fields
           let parsed: any = null;
-          let parseError: any = null;
           try {
             parsed = JSON.parse(response.text || '{}');
-          } catch (pe) {
-            parseError = pe;
-          }
+          } catch {}
 
           if (!parsed || typeof parsed.answer !== 'string' || typeof parsed.coreIdea !== 'string') {
-            // Retry once on the same model with maxOutputTokens 2048
             const retryConfig = { ...config, maxOutputTokens: 2048 };
             try {
               const retryResponse = await ai.models.generateContent({
@@ -213,14 +226,11 @@ async function startServer() {
               });
               parsed = JSON.parse(retryResponse.text || '{}');
               response = retryResponse;
-            } catch (re) {
-              parseError = re;
-            }
+            } catch {}
           }
 
           if (!parsed || typeof parsed.answer !== 'string' || typeof parsed.coreIdea !== 'string') {
             const finishReason = response?.candidates?.[0]?.finishReason || 'UNKNOWN';
-            // Do not switch models for malformed output. Return 500 with error "Malformed model output (finishReason X)"
             return res.status(500).json({ error: `Malformed model output (finishReason ${finishReason})` });
           }
 
@@ -248,7 +258,6 @@ async function startServer() {
           const isAvailabilityError = status === 429 || status === 503 || status === 403 || status === 404 || errMsg.includes('429') || errMsg.includes('503') || errMsg.includes('resource_exhausted') || errMsg.includes('not found') || errMsg.includes('unavailable');
 
           if (isAvailabilityError && i < modelsToTry.length - 1) {
-            console.warn(`Model ${tryModel} encountered availability/quota error (${status}), falling back to next model...`);
             continue;
           } else {
             throw err;
@@ -275,9 +284,25 @@ async function startServer() {
     }
   });
 
-  app.post('/api/novelty-judge', rateLimitMiddleware, async (req, res) => {
+  app.post('/api/novelty-judge', async (req, res) => {
     try {
-      const { candidate, closestKept, candidateCore, model } = req.body;
+      const { candidate, closestKept, candidateCore } = req.body;
+
+      if (typeof candidate !== 'string' || candidate.length > 4000) {
+        return res.status(400).json({ error: 'candidate must be a string of at most 4000 characters.' });
+      }
+      if (candidateCore !== undefined && (typeof candidateCore !== 'string' || candidateCore.length > 300)) {
+        return res.status(400).json({ error: 'candidateCore must be a string of at most 300 characters.' });
+      }
+      if (!Array.isArray(closestKept) || closestKept.length > 8) {
+        return res.status(400).json({ error: 'closestKept must be an array of at most 8 strings.' });
+      }
+      for (const k of closestKept) {
+        if (typeof k !== 'string' || k.length > 300) {
+          return res.status(400).json({ error: 'Each kept item must be a string of at most 300 characters.' });
+        }
+      }
+
       const prompt = `You are a strict conceptual novelty judge for research insights.
 
 Candidate core idea:
@@ -291,11 +316,11 @@ ${candidate}
 Previously accepted core ideas:
 ${closestKept.map((c: string, i: number) => `${i + 1}. ${c}`).join('\n')}
 
-Decide: Does the candidate introduce a *genuinely new conceptual claim, mechanism, or perspective*, or is it the same underlying idea expressed through a different formal system, vocabulary, or framing?
+Decide: Does the candidate introduce a genuinely new conceptual claim, mechanism, or perspective, or is it the same underlying idea expressed through a different formal system, vocabulary, or framing?
 
 Treat as SAME idea when:
-- Different formal systems (Peano / set theory / category theory / rings) all expressing "how 1+1 becomes 2"
-- Different lenses that still make the identical claim
+- Different formal systems or vocabularies all expressing the identical underlying claim or relationship
+- Different lenses that still make the identical substantive point
 - Rephrasing or minor elaboration of an already-kept point
 
 Reply ONLY with valid JSON:
@@ -305,7 +330,7 @@ Reply ONLY with valid JSON:
 }`;
 
       const response = await ai.models.generateContent({
-        model: model || 'gemini-3.5-flash-lite',
+        model: 'gemini-3.5-flash-lite',
         contents: prompt,
         config: {
           responseMimeType: 'application/json',
@@ -321,12 +346,11 @@ Reply ONLY with valid JSON:
       });
     } catch (err: any) {
       console.error('Novelty judge error:', err);
-      res.json({ isNovel: true, reason: 'Judge failed – defaulting to novel' });
+      return res.status(503).json({ error: 'LLM judge unavailable' });
     }
   });
 
-  // Change 2: /api/embed accepts { texts } array of 1 to 4 strings, returns { embeddings } array of number arrays
-  app.post('/api/embed', rateLimitMiddleware, async (req, res) => {
+  app.post('/api/embed', async (req, res) => {
     try {
       const { texts } = req.body;
       if (!texts || !Array.isArray(texts) || texts.length === 0 || texts.length > 4) {
@@ -356,7 +380,6 @@ Reply ONLY with valid JSON:
     }
   });
 
-  // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },

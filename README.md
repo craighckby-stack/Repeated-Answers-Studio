@@ -1,79 +1,79 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 # Repeated Answers Studio
 
 > **Explore unique points on any topic by querying Gemini repeatedly with automated semantic novelty filtering, core-idea extraction, and GitHub sync.**
 
 ---
 
-## What Is This System & Is There Any Point To It?
+## What Is This System?
 
-When you ask an LLM a complex, open-ended question (e.g., *"What are the hidden risks and long-term consequences of human space colonization?"*), chat interfaces give you a single averaged, polite, predictable response. If you ask again, you get a polite rephrasing of the exact same points.
-
-**Repeated Answers Studio** solves this **mode collapse** and **sycophancy trap**:
-1. **Iterative Exploration**: It continuously queries Gemini in a loop, pushing the model past its first-instinct common-sense answers into deep, edge-case territory.
-2. **Aggressive Conceptual Novelty Filtering**: Every generated answer is subjected to multi-layered filters:
-   - **Full-Text Embedding & Jaccard Overlap**: Filters out superficial rephrasing.
-   - **Core-Idea Tagging & Embedding Gate**: Extracts the specific 4–8 word argument or framework used and compares its vector similarity against all previously accepted core ideas ($\ge 0.82$ similarity threshold triggers rejection).
-   - **LLM Conceptual Novelty Judge**: A strict judge prompt that acts as a final veto against semantic redundancy.
-3. **Why it matters**: It transforms an LLM from a passive answering machine into an automated exhaustive brainstorming engine—surfacing 50 to 200 genuinely distinct angles, trade-offs, and conceptual frameworks on any complex topic without human fatigue.
+When you ask an LLM a complex question in chat, it gives you a safe, averaged, predictable first-instinct answer. If you ask again, it often rephrases the same concepts. **Repeated Answers Studio** automates the process of querying Gemini repeatedly, extracting a distinct 4 to 8 word core idea from each answer, and filtering out semantic duplicates so you can assemble a rich map of diverse perspectives on any topic.
 
 ---
 
 ## Features
 
-- **Dual Engines**:
-  - **Gemini Engine**: Powered by `@google/genai` (supporting `gemini-3.5-flash`, `gemini-4-argon` with High Thinking mode, and `gemini-3.5-flash-lite`) with automatic rate-limit backoff and fallback models.
-  - **Sandbox Engine**: Fully offline, deterministic test mode with template combinations and capacity limits.
-- **Strict Novelty Pipelines**: Core-idea extraction, semantic vector distance (768-dim), and LLM-as-judge semantic validation.
-- **GitHub Batch Sync**: Automatically commits run outputs in batches (`runs/<run-id>/batch-0001.jsonl`) and updates `manifest.json`.
-- **Local Persistence & Export**: IndexedDB run archiving with instant export to **JSONL** and **Markdown**.
-
----
-
-## Architecture Overview
-
-| Layer | Technology | Purpose |
-| --- | --- | --- |
-| **Frontend** | React 19, TypeScript, Tailwind CSS | Responsive dashboard with live progress, attempt logs, rejections monitor, and export controls. |
-| **Backend** | Node.js, Express (`server.ts`), `@google/genai` | Secure server-side proxy handling Gemini content generation, embeddings, rate-limiting, and model fallback. |
-| **Persistence** | IndexedDB (`storage.ts`) | Client-side storage for settings, run archives, and vector memories. |
-| **Sync** | GitHub Contents API (`github.ts`) | Automated batch commits and manifest tracking. |
+- **Dual Engines**: 
+  - **Gemini Engine**: Live API queries with automated multi-model fallback (`gemini-3.5-flash-lite`, `gemini-3.5-flash`), high thinking config, and structured JSON outputs.
+  - **Sandbox Engine**: Built-in algorithmic test runner requiring zero API keys for instant testing.
+- **Strict 5-Gate Novelty Evaluation**:
+  1. **Full-Text Embedding Cosine Similarity** (Default threshold: `0.85`, adjustable in Settings).
+  2. **Local Word Overlap / Jaccard Similarity** (Default threshold: `0.75`, adjustable in Settings).
+  3. **Exact Core Idea Match**: Rejects exact duplicates of previous core idea labels.
+  4. **Core Idea Embedding Cosine Similarity** (Default threshold: `0.90`, adjustable in Settings).
+  5. **LLM Conceptual Judge**: Optional final validation check via `gemini-3.5-flash-lite` to ensure the candidate introduces a genuinely new conceptual claim. If the judge is unavailable, candidates are not kept.
+- **Robust Rate Limiting & Pausing**: Configurable via `RATE_LIMIT_PER_MINUTE` (default `60`). Runs automatically pause on rate limits and can be resumed safely.
+- **GitHub Sync**: Automatically batch-commits your attempt history (kept, rejected, and error entries) and Markdown export manifests directly to any GitHub repository.
+- **Export Options**: Download full attempt logs as JSONL or compiled kept answers as clean Markdown.
 
 ---
 
 ## Setup & Running Locally
 
-1. **Clone and install**:
+1. **Clone & Install Dependencies**:
    ```bash
-   git clone https://github.com/your-username/repeated-answers-studio.git
+   git clone https://github.com/<OWNER>/<REPO>.git
    cd repeated-answers-studio
    npm install
    ```
-
-2. **Configure environment variables**:
+2. **Configure Environment Variables**:
    Create a `.env` file in the root directory:
    ```env
-   GEMINI_API_KEY="your-gemini-api-key"
-   APP_ACCESS_TOKEN="" # Optional: require x-access-token header on /api routes
-   PORT=3000
+   GEMINI_API_KEY=your_gemini_api_key_here
+   RATE_LIMIT_PER_MINUTE=60
+   TRUST_PROXY=false
+   # Optional: APP_ACCESS_TOKEN=your_secret_token
    ```
-
-3. **Run the development server**:
+3. **Development Mode**:
    ```bash
    npm run dev
    ```
-   Open `http://localhost:3000` in your browser.
+   Open `http://localhost:3000`.
+
+4. **Production Deployment**:
+   ```bash
+   npm run build
+   NODE_ENV=production npm start
+   ```
+   *Note: The app requires a Node.js server (Express + Vite middleware) and will not run on static-only hosting.*
 
 ---
 
-## Usage Guidance
+## Configuration Notes
 
-### Recommended Prompts (Complex & Multi-Faceted)
-- *"What are the hidden risks and long-term consequences of human space colonization?"*
-- *"Why do complex software architectures inevitably degenerate over time?"*
-- *"How can decentralized economies reshape global labor markets?"*
+- **Thresholds**: Fully adjustable in the Settings panel (Embedding similarity `0.5 - 0.99`, Wording overlap `0.5 - 0.99`, Core idea similarity `0.5 - 0.99`).
+- **Rate Limits & Proxies**: If running behind a reverse proxy (e.g. Nginx, Cloud Run), set `TRUST_PROXY=true` (or the number of trusted proxy hops) so rate limiting correctly tracks client IPs.
+- **Server Security**: By default, `/api/*` routes are unauthenticated except for rate limits. Set `APP_ACCESS_TOKEN` in `.env` to require the `x-access-token` header.
 
-### Prompts to Avoid (Factual / Single-Answer)
-- *"What is one plus one?"* (Factual queries have only one valid formulation and will immediately trigger semantic duplication rejections).
+---
+
+## Disclaimer
+
+Outputs are generated by a language model, have not been checked for accuracy, and should not be cited as findings. Whether this filter produces more distinct ideas than plain repeated sampling has not been measured. Each attempt consumes API quota.
 
 ---
 

@@ -216,7 +216,7 @@ export function StudioApp() {
                 Gemini Engine
               </span>
             </h1>
-            <p className="text-xs text-slate-400">Query models repeatedly, filter semantic duplicates, and compile pristine insights.</p>
+            <p className="text-xs text-slate-400">Query models repeatedly, filter semantic duplicates, and compile candidate ideas. Outputs are unverified.</p>
           </div>
         </div>
 

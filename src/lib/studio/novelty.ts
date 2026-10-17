@@ -5,7 +5,6 @@
 
 import { AnswerEntry } from './types';
 
-// Normalize vector to unit length
 export function normalizeVector(v: number[]): number[] {
   let norm = 0;
   for (let i = 0; i < v.length; i++) {
@@ -16,7 +15,6 @@ export function normalizeVector(v: number[]): number[] {
   return v.map(val => val / norm);
 }
 
-// Compute cosine similarity between two vectors
 export function cosineSimilarity(a: number[], b: number[]): number {
   if (!a || !b || a.length !== b.length || a.length === 0) return 0;
   let dot = 0;
@@ -32,9 +30,8 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return dot / denom;
 }
 
-// Tokenize and extract words for local Jaccard overlap
 export function contentWords(text: string): Set<string> {
-  const cleaned = text.toLowerCase().replace(/[^\w\s]/g, '');
+  const cleaned = (text || '').toLowerCase().replace(/[^\w\s]/g, '');
   const tokens = cleaned.split(/\s+/).filter(t => t.length > 2);
   return new Set(tokens);
 }
@@ -50,129 +47,132 @@ export function jaccardSimilarity(setA: Set<string>, setB: Set<string>): number 
   return intersection / union;
 }
 
-export interface JudgeResult {
-  isNovel: boolean;
+export interface GateResult {
+  keep: boolean;
   reason?: string;
   similarityScore?: number;
-  tagSimilarity?: number | null;
-  closestMatchId?: string;
+  coreSimilarity?: number;
   closestMatchIndex?: number | null;
+  closestMatchId?: string;
   closestMatchText?: string;
 }
 
 const normIdea = (idea?: string | null) => (idea || '').trim().toLowerCase();
 
-export function judgeNovelty(
-  newText: string,
-  newEmbedding: number[],
-  newCoreIdea: string | null | undefined,
-  newTagEmbedding: number[] | undefined,
+export function evaluateGate(
+  candidateText: string,
+  textEmbedding: number[],
+  coreIdea: string,
+  coreEmbedding: number[],
   keptEntries: AnswerEntry[],
-  embeddingThreshold: number,
-  localThreshold: number,
-  tagThreshold: number
-): JudgeResult {
-  // 1. Check exact normalized coreIdea match
-  const newIdeaNorm = normIdea(newCoreIdea);
-  if (newIdeaNorm) {
+  settings: {
+    embeddingThreshold: number;
+    localThreshold: number;
+    tagThreshold: number;
+  }
+): GateResult {
+  const newWords = contentWords(candidateText);
+
+  // 1. Full-text embedding cosine >= settings.embeddingThreshold
+  let maxEmbSim = 0;
+  let embClosest: AnswerEntry | null = null;
+  if (textEmbedding && textEmbedding.length > 0) {
     for (const kept of keptEntries) {
-      if (normIdea(kept.coreIdea) === newIdeaNorm) {
+      if (kept.embedding && kept.embedding.length > 0) {
+        const sim = cosineSimilarity(textEmbedding, kept.embedding);
+        if (sim > maxEmbSim) {
+          maxEmbSim = sim;
+          embClosest = kept;
+        }
+      }
+    }
+  }
+
+  // 2. Local word overlap (Jaccard) >= settings.localThreshold
+  let maxLocSim = 0;
+  let locClosest: AnswerEntry | null = null;
+  for (const kept of keptEntries) {
+    if (kept.wordSet) {
+      const loc = jaccardSimilarity(newWords, new Set(kept.wordSet));
+      if (loc > maxLocSim) {
+        maxLocSim = loc;
+        locClosest = kept;
+      }
+    }
+  }
+
+  // 3. Normalized core idea exactly equal to a kept core idea
+  const newNorm = normIdea(coreIdea);
+  if (newNorm) {
+    for (const kept of keptEntries) {
+      if (normIdea(kept.coreIdea) === newNorm) {
         return {
-          isNovel: false,
+          keep: false,
           reason: `Same core idea as #${kept.index}`,
           similarityScore: 1.0,
-          tagSimilarity: 1.0,
-          closestMatchId: kept.id,
+          coreSimilarity: 1.0,
           closestMatchIndex: kept.index,
+          closestMatchId: kept.id,
           closestMatchText: kept.text,
         };
       }
     }
   }
 
-  // 2. Check tagEmbedding cosine similarity against tagThreshold
-  let maxTagSim = 0;
-  let tagClosestMatch: AnswerEntry | null = null;
-  if (newTagEmbedding && newTagEmbedding.length > 0) {
+  // 4. Core embedding cosine >= settings.tagThreshold
+  let maxCoreSim = 0;
+  let coreClosest: AnswerEntry | null = null;
+  if (coreEmbedding && coreEmbedding.length > 0) {
     for (const kept of keptEntries) {
-      if (kept.tagEmbedding && kept.tagEmbedding.length > 0) {
-        const tSim = cosineSimilarity(newTagEmbedding, kept.tagEmbedding);
-        if (tSim > maxTagSim) {
-          maxTagSim = tSim;
-          tagClosestMatch = kept;
+      if (kept.coreEmbedding && kept.coreEmbedding.length > 0) {
+        const cSim = cosineSimilarity(coreEmbedding, kept.coreEmbedding);
+        if (cSim > maxCoreSim) {
+          maxCoreSim = cSim;
+          coreClosest = kept;
         }
       }
     }
   }
 
-  if (maxTagSim >= tagThreshold && tagClosestMatch) {
+  const thresholdPercent = Math.round(settings.tagThreshold * 100);
+  const actualPercent = Math.round(maxCoreSim * 100);
+  if (maxCoreSim >= settings.tagThreshold && coreClosest) {
     return {
-      isNovel: false,
-      reason: `Same core idea as #${tagClosestMatch.index} (tag similarity ${(maxTagSim * 100).toFixed(0)}%)`,
-      similarityScore: maxTagSim,
-      tagSimilarity: maxTagSim,
-      closestMatchId: tagClosestMatch.id,
-      closestMatchIndex: tagClosestMatch.index,
-      closestMatchText: tagClosestMatch.text,
+      keep: false,
+      reason: `Core idea too similar to #${coreClosest.index} (${actualPercent}% ≥ ${thresholdPercent}%)`,
+      similarityScore: maxCoreSim,
+      coreSimilarity: maxCoreSim,
+      closestMatchIndex: coreClosest.index,
+      closestMatchId: coreClosest.id,
+      closestMatchText: coreClosest.text,
     };
   }
 
-  // 3. Existing embedding and local word overlap similarity
-  const newWords = contentWords(newText);
-  let maxEmbSim = 0;
-  let maxLocSim = 0;
-  let closestMatch: AnswerEntry | null = null;
-
-  for (const kept of keptEntries) {
-    if (newEmbedding.length > 0 && kept.embedding && kept.embedding.length > 0) {
-      const embSim = cosineSimilarity(newEmbedding, kept.embedding);
-      if (embSim > maxEmbSim) {
-        maxEmbSim = embSim;
-        closestMatch = kept;
-      }
-    }
-
-    if (kept.wordSet) {
-      const locSim = jaccardSimilarity(newWords, new Set(kept.wordSet));
-      if (locSim > maxLocSim) {
-        maxLocSim = locSim;
-        if (locSim >= maxEmbSim) {
-          closestMatch = kept;
-        }
-      }
-    }
-  }
-
-  if (maxEmbSim >= embeddingThreshold) {
+  if (maxEmbSim >= settings.embeddingThreshold && embClosest) {
     return {
-      isNovel: false,
-      reason: `Too similar semantically (similarity: ${(maxEmbSim * 100).toFixed(1)}% >= threshold ${(embeddingThreshold * 100).toFixed(0)}%)`,
+      keep: false,
+      reason: 'Full-text too similar',
       similarityScore: maxEmbSim,
-      tagSimilarity: maxTagSim > 0 ? maxTagSim : null,
-      closestMatchId: closestMatch?.id,
-      closestMatchIndex: closestMatch?.index,
-      closestMatchText: closestMatch?.text,
+      closestMatchIndex: embClosest.index,
+      closestMatchId: embClosest.id,
+      closestMatchText: embClosest.text,
     };
   }
 
-  if (maxLocSim >= localThreshold) {
+  if (maxLocSim >= settings.localThreshold && locClosest) {
     return {
-      isNovel: false,
-      reason: `Too similar in wording (overlap: ${(maxLocSim * 100).toFixed(1)}% >= threshold ${(localThreshold * 100).toFixed(0)}%)`,
+      keep: false,
+      reason: 'Wording overlap too high',
       similarityScore: maxLocSim,
-      tagSimilarity: maxTagSim > 0 ? maxTagSim : null,
-      closestMatchId: closestMatch?.id,
-      closestMatchIndex: closestMatch?.index,
-      closestMatchText: closestMatch?.text,
+      closestMatchIndex: locClosest.index,
+      closestMatchId: locClosest.id,
+      closestMatchText: locClosest.text,
     };
   }
 
   return {
-    isNovel: true,
+    keep: true,
     similarityScore: Math.max(maxEmbSim, maxLocSim),
-    tagSimilarity: maxTagSim > 0 ? maxTagSim : null,
-    closestMatchId: closestMatch?.id,
-    closestMatchIndex: closestMatch?.index,
-    closestMatchText: closestMatch?.text,
+    coreSimilarity: maxCoreSim,
   };
 }
