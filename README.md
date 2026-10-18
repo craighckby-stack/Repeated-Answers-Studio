@@ -9,9 +9,56 @@
 
 ---
 
-## What Is This System?
+## The Point of the System (Summarized)
 
-When you ask an LLM a complex question in chat, it gives you a safe, averaged, predictable first-instinct answer. If you ask again, it often rephrases the same concepts. **Repeated Answers Studio** automates the process of querying Gemini repeatedly, extracting a distinct 4 to 8 word core idea from each answer, and filtering out semantic duplicates so you can assemble a rich map of diverse perspectives on any topic.
+When asked a question, language models default to their highest-probability consensus answer. If queried repeatedly, they rephrase the same 2–3 concepts using different words (*semantic mode collapse*).
+
+**Repeated Answers Studio** breaks this loop by turning the model into a divergent research engine:
+1. **Repeated Diverse Probing**: Prompts the model repeatedly while actively injecting previous outputs as negative constraints ("avoid these concepts").
+2. **Mandatory Testability**: Requires every answer to state an **observable consequence** and **counterevidence**, filtering out untestable hand-waving.
+3. **Multi-Stage Novelty Filtering**: Evaluates each candidate through a fast cascade of gates (exact core-idea match, Jaccard word overlap, dense vector cosine similarity, and an optional LLM conceptual judge) to reject duplicates.
+4. **Persistent Research Corpus**: Compiles kept insights into clean Markdown summaries or versioned JSONL datasets synced to GitHub.
+
+---
+
+## Question Guide: Getting the Best Results
+
+The quality of insights depends directly on the structure of the prompt.
+
+### ✅ What Works Best
+
+High-yield questions have **wide, multi-causal hypothesis spaces** where dozens of valid mechanisms, failure modes, or trade-offs coexist.
+
+* **Complex Systems & Software Architecture**:
+  * *"What unexpected structural failure modes cause large distributed microservice systems to experience cascading collapse despite comprehensive automated testing?"*
+  * *"Why do cybersecurity defenses in mature enterprises systematically fail against low-sophistication insider threats?"*
+* **Biology, Medicine & Longevity**:
+  * *"What under-investigated cellular or systemic mechanisms could explain why certain mammal species show negligible senescence compared to closely related counterparts?"*
+  * *"What non-genetic maternal environmental factors during early gestation induce long-term epigenetic adaptations in offspring immune systems?"*
+* **Economics & System Dynamics**:
+  * *"What second-order feedback loops cause well-intended platform anti-monopoly regulations to entrench existing incumbent monopolies?"*
+  * *"What unpriced economic externalities will emerge if automated agent-to-agent micropayment networks replace human consumer billing?"*
+* **Cognitive Science & Organizations**:
+  * *"How does prolonged daily interaction with predictive AI language assistants alter human cognitive metacognition and problem decomposition skills?"*
+  * *"Why do organizational consensus-seeking mechanisms systematically filter out true outlier innovations in high-stakes industries?"*
+
+#### The Prompt Recipe
+1. **Ask for *mechanisms*, not *opinions***: Use *"What non-obvious mechanisms..."* or *"What unrecognized failure modes..."* rather than *"Is X good or bad?"*
+2. **Anchor to a paradox or constraint**: e.g., *"Why does X degrade even when Y investment increases?"*
+3. **Set the right abstraction level**: Use the UI's **Abstraction** toggle (**Balanced** for conceptual frameworks with observables; **Concrete** for direct experimental hypotheses).
+
+---
+
+### ❌ What Doesn't Work (And Why)
+
+* **Single-Answer / Factual Queries** (*"What is the capital of Iceland?"*, *"When was Python created?"*):
+  * *Why it fails*: There is only one correct answer. Attempt #1 is kept; attempts #2+ are identical and immediately rejected by the exact core-idea or full-text gate.
+* **Broad "Explain X" Tutorials** (*"Explain how transformers work"*, *"Overview of photosynthesis"*):
+  * *Why it fails*: The model regurgitates textbook intros. After 2–3 attempts, all canonical explanations are exhausted and subsequent attempts fail word overlap or embedding thresholds.
+* **Vague Philosophical Opinions** (*"Is artificial intelligence good or bad for art?"*):
+  * *Why it fails*: Subjective moralizing fails the **Testability Gate** (requires a concrete, falsifiable observable consequence and measurable counterevidence).
+* **Binary Yes/No Questions** (*"Will quantum computers break RSA by 2030?"*):
+  * *Why it fails*: The model splits into two camps ("Yes because X", "No because Y") and hits maximum consecutive misses by attempt #3.
 
 ---
 

@@ -109,6 +109,9 @@ export function StudioApp() {
     const updated = clampSettings({ ...settings, [key]: value });
     setSettings(updated);
     saveSettings(updated);
+    if (key === 'target') {
+      setRunState((prev) => ({ ...prev, target: updated.target }));
+    }
     if (key === 'appAccessToken') {
       setAppAccessToken(value);
     }
@@ -135,6 +138,7 @@ export function StudioApp() {
     }
     if (runnerRef.current) {
       setWarningBanner(null);
+      setRunState((prev) => ({ ...prev, target: settings.target }));
       runnerRef.current.updateSettings(settings);
       runnerRef.current.start();
     }

@@ -32,6 +32,8 @@ export async function commitBatchToGitHub(
     status: e.status,
     text: e.text,
     coreIdea: e.coreIdea || null,
+    observableConsequence: e.observableConsequence ?? null,
+    counterevidence: e.counterevidence ?? null,
     reason: e.reason || null,
     embeddingSimilarity: e.similarityScore ?? null,
     tagSimilarity: e.tagSimilarity ?? null,

@@ -60,7 +60,7 @@ export function contentWords(text: string): Set<string> {
 }
 
 export function jaccardSimilarity(setA: Set<string>, setB: Set<string>): number {
-  if (setA.size === 0 && setB.size === 0) return 1.0;
+  if (setA.size === 0 || setB.size === 0) return 0;
   let intersection = 0;
   for (const item of setA) {
     if (setB.has(item)) intersection++;
@@ -78,9 +78,24 @@ export interface GateResult {
   closestMatchIndex?: number | null;
   closestMatchId?: string;
   closestMatchText?: string;
+  /** true = data integrity problem; the runner must stop the run. */
+  fatal?: boolean;
+  /** true = embedding service failure; not a content decision. */
+  error?: boolean;
 }
 
 const normIdea = (idea?: string | null) => (idea || '').trim().toLowerCase();
+
+const keptWordCache = new WeakMap<AnswerEntry, Set<string>>();
+
+function keptWords(entry: AnswerEntry): Set<string> {
+  let words = keptWordCache.get(entry);
+  if (!words) {
+    words = contentWords(entry.text || '');
+    keptWordCache.set(entry, words);
+  }
+  return words;
+}
 
 const TESTABILITY_BANNED = [
   'none',
@@ -143,6 +158,14 @@ export function evaluateGate(
     }
   }
 
+  if (!keptEntries || keptEntries.length === 0) {
+    return {
+      keep: true,
+      similarityScore: 0,
+      coreSimilarity: 0,
+    };
+  }
+
   // 1. Full-text embedding cosine >= settings.embeddingThreshold
   let maxEmbSim = 0;
   let embClosest: AnswerEntry | null = null;
@@ -174,12 +197,11 @@ export function evaluateGate(
   let maxLocSim = 0;
   let locClosest: AnswerEntry | null = null;
   for (const kept of keptEntries) {
-    if (kept.wordSet) {
-      const loc = jaccardSimilarity(newWords, new Set(kept.wordSet));
-      if (loc > maxLocSim) {
-        maxLocSim = loc;
-        locClosest = kept;
-      }
+    const kWords = kept.wordSet ? new Set(kept.wordSet) : keptWords(kept);
+    const loc = jaccardSimilarity(newWords, kWords);
+    if (loc > maxLocSim) {
+      maxLocSim = loc;
+      locClosest = kept;
     }
   }
 

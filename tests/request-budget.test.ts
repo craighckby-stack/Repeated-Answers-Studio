@@ -20,6 +20,8 @@ test('Request budget test: mock fetch call counts per attempt', async () => {
         return new Response(JSON.stringify({
           text: `Generated response ${apiCallCount} with unique phrasing about space colonization challenges.`,
           coreIdea: `Idea ${apiCallCount}`,
+          observableConsequence: 'Observable atmospheric measurements show steady nitrogen balance across all chambers.',
+          counterevidence: 'Control tests reveal no differences in nitrogen isotope ratios over sixty days.',
           modelUsed: 'gemini-3.5-flash',
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
