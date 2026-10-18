@@ -72,8 +72,9 @@ function validateGenerateInput(req: express.Request, res: express.Response, next
     return res.status(400).json({ error: `Invalid or unlisted model: ${modelToTest}` });
   }
 
-  if (typeof question !== 'string' || question.trim() === '' || question.length > 2000) {
-    return res.status(400).json({ error: 'Question must be a string between 1 and 2000 characters.' });
+  const questionLines = typeof question === 'string' ? question.split('\n').length : 0;
+  if (typeof question !== 'string' || question.trim() === '' || questionLines > 1000 || question.length > 200000) {
+    return res.status(400).json({ error: 'Question must be between 1 and 1000 lines (and at most 200,000 characters).' });
   }
 
   if (!['short', 'note', 'list'].includes(shape)) {

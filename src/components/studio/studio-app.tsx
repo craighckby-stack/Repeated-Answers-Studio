@@ -132,8 +132,13 @@ export function StudioApp() {
       setWarningBanner('Please enter a valid question or topic.');
       return;
     }
-    if (settings.question.length > 2000) {
-      setWarningBanner('Question cannot exceed 2000 characters.');
+    const questionLines = (settings.question || '').split('\n').length;
+    if (questionLines > 1000) {
+      setWarningBanner('Question cannot exceed 1000 lines.');
+      return;
+    }
+    if (settings.question.length > 200000) {
+      setWarningBanner('Question cannot exceed 200,000 characters.');
       return;
     }
     if (runnerRef.current) {
@@ -279,15 +284,17 @@ export function StudioApp() {
               <label className="text-sm font-semibold text-slate-200 flex items-center gap-2">
                 <Terminal className="w-4 h-4 text-indigo-400" /> Research Prompt / Question
               </label>
-              <span className="text-xs text-slate-500">{settings.question.length} chars</span>
+              <span className="text-xs text-slate-500">
+                {(settings.question || '').split('\n').length} / 1000 lines · {(settings.question || '').length.toLocaleString()} chars
+              </span>
             </div>
             <textarea
               value={settings.question}
               onChange={(e) => handleSettingChange('question', e.target.value)}
               disabled={runState.status === 'running'}
-              rows={3}
-              className="w-full rounded-xl bg-slate-950 border border-slate-800 p-3 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 transition resize-none disabled:opacity-50"
-              placeholder="Enter question to test repeatedly..."
+              rows={6}
+              className="w-full rounded-xl bg-slate-950 border border-slate-800 p-3 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 transition resize-y min-h-[120px] max-h-[600px] disabled:opacity-50 font-mono text-xs leading-relaxed"
+              placeholder="Enter question, hypothesis, or research context (supports up to 1000 lines)..."
             />
             {/* Presets */}
             <div className="space-y-2">

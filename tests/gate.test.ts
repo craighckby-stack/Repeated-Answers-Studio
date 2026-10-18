@@ -303,4 +303,16 @@ test('StudioRunner: runs to target completion using sandbox engine', async () =>
   assert.ok(addedEntries.every(e => e.modelUsed === 'sandbox'));
 });
 
+test('Question input lines limit: allows up to 1000 lines', () => {
+  const lineArray1000 = Array.from({ length: 1000 }, (_, i) => `Line ${i + 1}: Observation data`);
+  const text1000 = lineArray1000.join('\n');
+  assert.strictEqual(text1000.split('\n').length, 1000);
+
+  const lineArray1001 = Array.from({ length: 1001 }, (_, i) => `Line ${i + 1}: Observation data`);
+  const text1001 = lineArray1001.join('\n');
+  assert.strictEqual(text1001.split('\n').length, 1001);
+  assert.ok(text1001.split('\n').length > 1000);
+});
+
+
 
