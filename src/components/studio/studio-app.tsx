@@ -341,6 +341,31 @@ export function StudioApp() {
               </div>
             </div>
 
+            {/* Abstraction */}
+            <div>
+              <label className="text-xs font-medium text-slate-400 mb-1.5 block">Abstraction</label>
+              <div className="grid grid-cols-3 gap-1 p-1 bg-slate-950 border border-slate-800 rounded-xl">
+                {(['concrete', 'balanced', 'abstract'] as const).map((level) => (
+                  <button
+                    key={level}
+                    type="button"
+                    onClick={() => handleSettingChange('abstraction', level)}
+                    disabled={runState.status === 'running'}
+                    className={`py-1.5 px-3 rounded-lg text-xs font-medium transition ${
+                      settings.abstraction === level
+                        ? 'bg-indigo-600 text-white shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                    } disabled:opacity-50`}
+                  >
+                    {level === 'concrete' ? 'Concrete' : level === 'balanced' ? 'Balanced' : 'Abstract'}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-slate-500 mt-1">
+                Abstract ideas are allowed, but each must still name an observable consequence.
+              </p>
+            </div>
+
             {settings.engine === 'gemini' && (
               <div className="space-y-3 pt-2 border-t border-slate-800">
                 <div>
@@ -682,6 +707,22 @@ export function StudioApp() {
                         </div>
                       )}
                       <p className="text-slate-200 text-sm whitespace-pre-wrap leading-relaxed">{e.text}</p>
+                      {(e.observableConsequence || e.counterevidence) && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-1">
+                          {e.observableConsequence && (
+                            <div className="text-xs text-emerald-300/90 bg-emerald-950/20 border border-emerald-900/30 p-2.5 rounded-lg space-y-1">
+                              <span className="font-semibold block text-[10px] text-emerald-400 uppercase tracking-wider">Observable Prediction</span>
+                              <p className="text-slate-300 text-xs leading-normal">{e.observableConsequence}</p>
+                            </div>
+                          )}
+                          {e.counterevidence && (
+                            <div className="text-xs text-amber-300/90 bg-amber-950/20 border border-amber-900/30 p-2.5 rounded-lg space-y-1">
+                              <span className="font-semibold block text-[10px] text-amber-400 uppercase tracking-wider">Counterevidence</span>
+                              <p className="text-slate-300 text-xs leading-normal">{e.counterevidence}</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ))
                 )

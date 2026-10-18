@@ -32,6 +32,7 @@ export function toAttemptsJsonl(data: ExportRunData): string {
     engine: settings.engine,
     selectedModel: settings.model,
     shape: settings.shape,
+    abstraction: settings.abstraction,
     highThinking: settings.highThinking,
     embeddingThreshold: settings.embeddingThreshold,
     localThreshold: settings.localThreshold,
@@ -56,6 +57,8 @@ export function toAttemptsJsonl(data: ExportRunData): string {
       status: e.status,
       text: e.text,
       coreIdea: e.coreIdea || null,
+      observableConsequence: e.observableConsequence ?? null,
+      counterevidence: e.counterevidence ?? null,
       reason: e.reason || null,
       embeddingSimilarity: e.similarityScore ?? null,
       tagSimilarity: e.tagSimilarity ?? null,
@@ -89,6 +92,12 @@ export function toKeptMarkdown(data: ExportRunData): string {
     const ideaTitle = e.coreIdea ? ` — ${e.coreIdea}` : '';
     md += `### ${idx + 1}. Insight #${e.index}${ideaTitle}\n\n`;
     md += `${e.text}\n\n`;
+    if (e.observableConsequence) {
+      md += `- **Observable prediction**: ${e.observableConsequence}\n\n`;
+    }
+    if (e.counterevidence) {
+      md += `- **Counterevidence**: ${e.counterevidence}\n\n`;
+    }
     if (e.modelUsed) {
       md += `*Model used: \`${e.modelUsed}\`*\n\n`;
     }

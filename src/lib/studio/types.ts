@@ -9,6 +9,7 @@ export interface StudioSettings {
   model: string;
   highThinking: boolean;
   shape: 'short' | 'note' | 'list';
+  abstraction: 'concrete' | 'balanced' | 'abstract';
   target: number;
   embeddingThreshold: number; // 0.5 to 0.99 (default 0.85)
   localThreshold: number;     // 0.5 to 0.99 (default 0.75)
@@ -37,6 +38,7 @@ export const DEFAULT_SETTINGS: StudioSettings = {
   model: 'gemini-3.5-flash',
   highThinking: false,
   shape: 'note',
+  abstraction: 'balanced',
   target: 100,
   embeddingThreshold: 0.85,
   localThreshold: 0.75,
@@ -53,8 +55,14 @@ export const DEFAULT_SETTINGS: StudioSettings = {
 
 export function clampSettings(settings: StudioSettings): StudioSettings {
   const clamp = (val: number, min: number, max: number) => Math.max(min, Math.min(max, isNaN(val) ? min : val));
+  const validAbstractions = ['concrete', 'balanced', 'abstract'] as const;
+  const abstraction = validAbstractions.includes(settings.abstraction as any)
+    ? settings.abstraction
+    : 'balanced';
+
   return {
     ...settings,
+    abstraction,
     embeddingThreshold: clamp(settings.embeddingThreshold, 0.5, 0.99),
     localThreshold: clamp(settings.localThreshold, 0.5, 0.99),
     tagThreshold: clamp(settings.tagThreshold, 0.5, 0.99),
@@ -85,6 +93,8 @@ export interface AnswerEntry {
   selectedModel?: string;
   modelUsed?: string;
   fallbackUsed?: boolean;
+  observableConsequence?: string | null;
+  counterevidence?: string | null;
 }
 
 export interface RunState {

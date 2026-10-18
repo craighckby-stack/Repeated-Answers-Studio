@@ -102,6 +102,11 @@ function validateGenerateInput(req: express.Request, res: express.Response, next
     }
   }
 
+  const { abstraction } = req.body;
+  if (abstraction !== undefined && !['concrete', 'balanced', 'abstract'].includes(abstraction)) {
+    return res.status(400).json({ error: "Abstraction must be 'concrete', 'balanced', or 'abstract'." });
+  }
+
   next();
 }
 
@@ -155,13 +160,23 @@ async function startServer() {
 
   app.post('/api/generate', validateGenerateInput, async (req, res) => {
     try {
-      const { model, question, shape, recentAnswers, recentIdeas, highThinking } = req.body;
+      const { model, question, shape, recentAnswers, recentIdeas, highThinking, abstraction } = req.body;
       const requestedModel = model || 'gemini-3.5-flash';
 
       let shapeInstruction = '';
       if (shape === 'short') shapeInstruction = 'Provide a short, punchy answer in 1-2 sentences.';
       else if (shape === 'note') shapeInstruction = 'Provide a concise paragraph answer.';
       else if (shape === 'list') shapeInstruction = 'Provide exactly 3 distinct bullet points.';
+
+      let abstractionInstruction = '';
+      if (abstraction === 'concrete') {
+        abstractionInstruction = 'State the idea in terms of specific mechanisms and measurable quantities.';
+      } else if (abstraction === 'abstract') {
+        abstractionInstruction = 'Work at the level of general principles and cross-domain mechanisms. Abstraction is encouraged, but the principle must still imply a specific observable consequence.';
+      } else {
+        abstractionInstruction = 'State the idea at a moderate level of generality, with at least one named mechanism.';
+      }
+      abstractionInstruction += " Frame the answer as a hypothesis, saying 'if X, then Y' where possible. Do not present it as established.";
 
       const avoidListStr = recentAnswers && recentAnswers.length > 0
         ? `\n\nCRITICAL: Do NOT repeat these recently stated points/answers:\n- ${recentAnswers.slice(-15).join('\n- ')}`
@@ -171,7 +186,7 @@ async function startServer() {
         ? `\n\nDo not reuse any of these core ideas: ${recentIdeas.slice(-30).join(', ')}.`
         : '';
 
-      const fullPrompt = `${question}\n\n${shapeInstruction}${avoidListStr}${avoidIdeasStr}\n\ncoreIdea is a 4 to 8 word label for the specific argument, method, or framework your answer uses. Make sure this response brings up a fresh angle or distinct point not covered in the avoid list.`;
+      const fullPrompt = `${question}\n\n${shapeInstruction}\n${abstractionInstruction}${avoidListStr}${avoidIdeasStr}\n\ncoreIdea is a 4 to 8 word label for the specific argument, method, or framework your answer uses. Make sure this response brings up a fresh angle or distinct point not covered in the avoid list.\n\nRequired fields at every abstraction level:\n- observableConsequence: One specific prediction that follows if this answer is right. Name what would be measured and roughly where or when.\n- counterevidence: One specific observation or result that would count against this answer. Do not write 'none', 'unknown', or 'not applicable'.\nBoth observableConsequence and counterevidence are strictly required.`;
 
       const config: any = {
         responseMimeType: 'application/json',
@@ -179,10 +194,18 @@ async function startServer() {
           type: Type.OBJECT,
           properties: {
             answer: { type: Type.STRING, description: 'The generated prose response.' },
-            coreIdea: { type: Type.STRING, description: 'A 4 to 8 word label for the specific argument, method, or framework used.' }
+            coreIdea: { type: Type.STRING, description: 'A 4 to 8 word label for the specific argument, method, or framework used.' },
+            observableConsequence: {
+              type: Type.STRING,
+              description: 'One specific prediction that follows if this answer is right. Name what would be measured and roughly where or when.',
+            },
+            counterevidence: {
+              type: Type.STRING,
+              description: 'One specific observation or result that would count against this answer. Do not write \'none\', \'unknown\', or \'not applicable\'.',
+            },
           },
-          required: ['answer', 'coreIdea']
-        }
+          required: ['answer', 'coreIdea', 'observableConsequence', 'counterevidence'],
+        },
       };
 
       if (highThinking) {
@@ -216,7 +239,14 @@ async function startServer() {
             parsed = JSON.parse(response.text || '{}');
           } catch {}
 
-          if (!parsed || typeof parsed.answer !== 'string' || typeof parsed.coreIdea !== 'string') {
+          const isMalformed = (p: any) =>
+            !p ||
+            typeof p.answer !== 'string' ||
+            typeof p.coreIdea !== 'string' ||
+            typeof p.observableConsequence !== 'string' ||
+            typeof p.counterevidence !== 'string';
+
+          if (isMalformed(parsed)) {
             const retryConfig = { ...config, maxOutputTokens: 2048 };
             try {
               const retryResponse = await ai.models.generateContent({
@@ -229,20 +259,20 @@ async function startServer() {
             } catch {}
           }
 
-          if (!parsed || typeof parsed.answer !== 'string' || typeof parsed.coreIdea !== 'string') {
+          if (isMalformed(parsed)) {
             const finishReason = response?.candidates?.[0]?.finishReason || 'UNKNOWN';
             return res.status(500).json({ error: `Malformed model output (finishReason ${finishReason})` });
           }
 
-          if (parsed && parsed.answer && parsed.coreIdea) {
-            return res.json({
-              text: parsed.answer,
-              coreIdea: parsed.coreIdea,
-              finishReason: response.candidates?.[0]?.finishReason,
-              modelUsed: usedModel,
-              fallbackUsed,
-            });
-          }
+          return res.json({
+            text: parsed.answer,
+            coreIdea: parsed.coreIdea,
+            observableConsequence: parsed.observableConsequence,
+            counterevidence: parsed.counterevidence,
+            finishReason: response.candidates?.[0]?.finishReason,
+            modelUsed: usedModel,
+            fallbackUsed,
+          });
         } catch (err: any) {
           lastError = err;
           const status = err.status || err.code || 500;
@@ -255,7 +285,7 @@ async function startServer() {
             throw err;
           }
 
-          const isAvailabilityError = status === 429 || status === 503 || status === 403 || status === 404 || errMsg.includes('429') || errMsg.includes('503') || errMsg.includes('resource_exhausted') || errMsg.includes('not found') || errMsg.includes('unavailable');
+          const isAvailabilityError = status === 429 || status === 503 || status === 403 || status === 404 || errMsg.includes('429') || errMsg.includes('503') || errMsg.includes('resource_exhausted') || errMsg.includes('not found') || errMsg.includes('unavailable') || errMsg.includes('quota');
 
           if (isAvailabilityError && i < modelsToTry.length - 1) {
             continue;
@@ -273,13 +303,19 @@ async function startServer() {
       return res.json({
         text: parsed.answer || response.text,
         coreIdea: parsed.coreIdea || 'General perspective',
+        observableConsequence: parsed.observableConsequence || '',
+        counterevidence: parsed.counterevidence || '',
         finishReason: response.candidates?.[0]?.finishReason,
         modelUsed: usedModel,
         fallbackUsed,
       });
     } catch (err: any) {
       console.error('Generation error:', err);
-      const status = err?.status || err?.code || 500;
+      let status = err?.status || err?.code || 500;
+      const errMsg = (err?.message || '').toLowerCase();
+      if ((status === 500 || isNaN(status)) && (errMsg.includes('429') || errMsg.includes('resource_exhausted') || errMsg.includes('quota') || errMsg.includes('rate limit'))) {
+        status = 429;
+      }
       return res.status(status >= 400 && status < 600 ? status : 500).json({ error: err?.message || 'Generation failed', status });
     }
   });

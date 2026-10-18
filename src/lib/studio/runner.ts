@@ -5,7 +5,7 @@
 
 import { AnswerEntry, StudioSettings } from './types';
 import { checkModel, generateAnswer, getEmbeddings, llmNoveltyJudge } from './gemini';
-import { evaluateGate, normalizeVector, contentWords, cosineSimilarity, jaccardSimilarity } from './novelty';
+import { evaluateGate, normalizeVector, contentWords, cosineSimilarity, jaccardSimilarity, checkTestable } from './novelty';
 import { generateSandboxAnswer, getSandboxCapacity } from './sandbox';
 import { commitBatchToGitHub, validateRepoFormat } from './github';
 import { saveRunArchive } from './storage';
@@ -143,6 +143,8 @@ export class StudioRunner {
         try {
           let text = '';
           let coreIdea = '';
+          let observableConsequence: string | null = null;
+          let counterevidence: string | null = null;
           let modelUsed: string | undefined = undefined;
           let fallbackUsed: boolean | undefined = undefined;
 
@@ -156,6 +158,8 @@ export class StudioRunner {
             const sandboxRes = generateSandboxAnswer(currentAttempt - 1);
             text = sandboxRes.text;
             coreIdea = sandboxRes.coreIdea;
+            observableConsequence = null;
+            counterevidence = null;
             modelUsed = 'sandbox';
             await new Promise(r => setTimeout(r, 50));
           } else {
@@ -171,10 +175,13 @@ export class StudioRunner {
               this.settings.shape,
               recentTexts,
               recentIdeas,
-              this.settings.highThinking
+              this.settings.highThinking,
+              this.settings.abstraction
             );
             text = genResult.text;
             coreIdea = genResult.coreIdea || (text ? text.slice(0, 160) : 'General perspective');
+            observableConsequence = genResult.observableConsequence || null;
+            counterevidence = genResult.counterevidence || null;
             modelUsed = genResult.modelUsed;
             fallbackUsed = genResult.fallbackUsed;
           }
@@ -199,6 +206,37 @@ export class StudioRunner {
             }
             this.notify();
             continue;
+          }
+
+          // Testability gate for gemini candidates (sandbox engine bypasses this gate)
+          if (this.settings.engine === 'gemini') {
+            const testable = checkTestable(observableConsequence, counterevidence);
+            if (!testable.ok) {
+              this.consecutiveMisses++;
+              const rejectedEntry: AnswerEntry = {
+                id: `${this.runId}-${currentAttempt}`,
+                runId: this.runId,
+                index: currentAttempt,
+                text,
+                timestamp: Date.now(),
+                status: 'rejected',
+                coreIdea,
+                observableConsequence,
+                counterevidence,
+                reason: testable.reason,
+                selectedModel: this.settings.model,
+                modelUsed,
+                fallbackUsed,
+              };
+              this.entries.push(rejectedEntry);
+              this.batchBuffer.push(rejectedEntry);
+              if (this.batchBuffer.length >= this.settings.perCommit) {
+                await this.flushBatch(false);
+              }
+              this.callbacks.onEntryAdded(rejectedEntry);
+              this.notify();
+              continue;
+            }
           }
 
           let textEmbedding: number[] = [];
@@ -257,7 +295,9 @@ export class StudioRunner {
                 embeddingThreshold: this.settings.embeddingThreshold,
                 localThreshold: this.settings.localThreshold,
                 tagThreshold: this.settings.tagThreshold,
-              }
+              },
+              observableConsequence,
+              counterevidence
             );
 
             isNovel = gateRes.keep;
@@ -287,6 +327,8 @@ export class StudioRunner {
                   reason: 'LLM judge unavailable',
                   selectedModel: this.settings.model,
                   modelUsed,
+                  observableConsequence,
+                  counterevidence,
                 };
                 this.entries.push(errEntry);
                 this.batchBuffer.push(errEntry);
@@ -324,6 +366,8 @@ export class StudioRunner {
             wordSet,
             status: isNovel ? 'kept' : 'rejected',
             coreIdea,
+            observableConsequence,
+            counterevidence,
             reason,
             similarityScore,
             closestMatchIndex,
@@ -352,10 +396,22 @@ export class StudioRunner {
           this.notify();
 
         } catch (err: any) {
-          console.error('Run iteration error:', err);
           const status = err.status || err.code || 500;
           const errMsg = (err.message || '').toLowerCase();
-          if (status === 429 || status === 503 || errMsg.includes('429') || errMsg.includes('resource_exhausted') || errMsg.includes('quota') || errMsg.includes('rate limit')) {
+          const isRateLimited =
+            status === 429 ||
+            status === 503 ||
+            errMsg.includes('429') ||
+            errMsg.includes('resource_exhausted') ||
+            errMsg.includes('quota') ||
+            errMsg.includes('rate limit');
+          const isNetworkError =
+            errMsg.includes('failed to fetch') ||
+            errMsg.includes('network') ||
+            errMsg.includes('load failed') ||
+            err.name === 'TypeError';
+
+          if (isRateLimited) {
             this.status = 'rate_limited';
             const errEntry: AnswerEntry = {
               id: `${this.runId}-${currentAttempt}`,
@@ -374,7 +430,27 @@ export class StudioRunner {
             }
             this.notify('Rate limit exceeded. Run paused. Resume when ready or switch to Sandbox.');
             break;
+          } else if (isNetworkError) {
+            this.status = 'paused';
+            const errEntry: AnswerEntry = {
+              id: `${this.runId}-${currentAttempt}`,
+              runId: this.runId,
+              index: currentAttempt,
+              text: '',
+              timestamp: Date.now(),
+              status: 'error',
+              reason: 'Network connection failed',
+              selectedModel: this.settings.model,
+            };
+            this.entries.push(errEntry);
+            this.batchBuffer.push(errEntry);
+            if (this.batchBuffer.length >= this.settings.perCommit) {
+              await this.flushBatch(false);
+            }
+            this.notify('Network connection failed. Run paused. Check your connection and resume.');
+            break;
           } else {
+            console.warn('Run iteration error:', err);
             this.consecutiveMisses++;
             const errEntry: AnswerEntry = {
               id: `${this.runId}-${currentAttempt}`,

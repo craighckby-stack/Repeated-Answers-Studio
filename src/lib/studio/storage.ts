@@ -13,6 +13,9 @@ const STORE_SETTINGS = 'settings';
 
 export function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      return reject(new Error('indexedDB is unavailable in this environment'));
+    }
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => resolve(request.result);
@@ -34,10 +37,6 @@ export function openDB(): Promise<IDBDatabase> {
 
 export async function saveSettings(settings: StudioSettings): Promise<void> {
   try {
-    const db = await openDB();
-    const tx = db.transaction(STORE_SETTINGS, 'readwrite');
-    const store = tx.objectStore(STORE_SETTINGS);
-
     const dbSettings = { ...settings };
     const localSettings = { ...settings };
 
@@ -52,8 +51,16 @@ export async function saveSettings(settings: StudioSettings): Promise<void> {
       localSettings.appAccessToken = '';
     }
 
-    store.put({ key: 'current_settings', value: dbSettings });
-    localStorage.setItem('ras_settings', JSON.stringify(localSettings));
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('ras_settings', JSON.stringify(localSettings));
+    }
+
+    if (typeof indexedDB !== 'undefined') {
+      const db = await openDB();
+      const tx = db.transaction(STORE_SETTINGS, 'readwrite');
+      const store = tx.objectStore(STORE_SETTINGS);
+      store.put({ key: 'current_settings', value: dbSettings });
+    }
   } catch (err) {
     console.error('Failed to save settings:', err);
   }
@@ -61,8 +68,13 @@ export async function saveSettings(settings: StudioSettings): Promise<void> {
 
 export async function loadSettings(): Promise<StudioSettings> {
   try {
-    const local = localStorage.getItem('ras_settings');
+    const local = typeof localStorage !== 'undefined' ? localStorage.getItem('ras_settings') : null;
     const parsedLocal = local ? JSON.parse(local) : {};
+
+    if (typeof indexedDB === 'undefined') {
+      return { ...DEFAULT_SETTINGS, ...parsedLocal };
+    }
+
     const db = await openDB();
     return new Promise((resolve) => {
       const tx = db.transaction(STORE_SETTINGS, 'readonly');
@@ -86,6 +98,7 @@ export async function loadSettings(): Promise<StudioSettings> {
 }
 
 export async function saveRunArchive(runId: string, entries: AnswerEntry[], metadata: any): Promise<void> {
+  if (typeof indexedDB === 'undefined') return;
   try {
     const db = await openDB();
     const tx = db.transaction([STORE_RUNS, STORE_ENTRIES], 'readwrite');
@@ -102,6 +115,7 @@ export async function saveRunArchive(runId: string, entries: AnswerEntry[], meta
 }
 
 export async function loadArchivedRunEntries(runId: string): Promise<AnswerEntry[]> {
+  if (typeof indexedDB === 'undefined') return [];
   try {
     const db = await openDB();
     return new Promise((resolve) => {

@@ -30,10 +30,33 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return dot / denom;
 }
 
+/** Scripts written without spaces between words. */
+const CJK_RE = /\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Hangul}|\p{Script=Thai}/u;
+
+/**
+ * Unicode-aware tokenization.
+ * - Latin, Cyrillic, Greek, Arabic, etc.: words longer than 2 characters.
+ * - Tokens containing CJK or Thai characters: character bigrams.
+ */
 export function contentWords(text: string): Set<string> {
-  const cleaned = (text || '').toLowerCase().replace(/[^\w\s]/g, '');
-  const tokens = cleaned.split(/\s+/).filter(t => t.length > 2);
-  return new Set(tokens);
+  if (!text) return new Set();
+
+  const cleaned = text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '');
+  const out = new Set<string>();
+
+  for (const tok of cleaned.split(/\s+/)) {
+    if (!tok) continue;
+
+    if (CJK_RE.test(tok)) {
+      const chars = [...tok];
+      for (let i = 0; i < chars.length - 1; i++) {
+        out.add(chars[i] + chars[i + 1]);
+      }
+    } else if ([...tok].length > 2) {
+      out.add(tok);
+    }
+  }
+  return out;
 }
 
 export function jaccardSimilarity(setA: Set<string>, setB: Set<string>): number {
@@ -59,6 +82,43 @@ export interface GateResult {
 
 const normIdea = (idea?: string | null) => (idea || '').trim().toLowerCase();
 
+const TESTABILITY_BANNED = [
+  'none',
+  'n/a',
+  'not applicable',
+  'unknown',
+  'cannot be tested',
+  'untestable',
+  'no counterevidence',
+  'no observable',
+];
+
+function isTestabilityFieldInvalid(val?: string | null): boolean {
+  if (!val || typeof val !== 'string') return true;
+  const trimmed = val.trim();
+  if (trimmed.length < 30) return true;
+  const lower = trimmed.toLowerCase();
+  for (const phrase of TESTABILITY_BANNED) {
+    if (lower === phrase || lower.startsWith(phrase + '.') || lower.startsWith(phrase + ',')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function checkTestable(
+  observableConsequence?: string | null,
+  counterevidence?: string | null
+): { ok: boolean; reason?: string } {
+  if (isTestabilityFieldInvalid(observableConsequence)) {
+    return { ok: false, reason: 'Not testable: no observable consequence stated' };
+  }
+  if (isTestabilityFieldInvalid(counterevidence)) {
+    return { ok: false, reason: 'Not testable: no counterevidence stated' };
+  }
+  return { ok: true };
+}
+
 export function evaluateGate(
   candidateText: string,
   textEmbedding: number[],
@@ -69,9 +129,19 @@ export function evaluateGate(
     embeddingThreshold: number;
     localThreshold: number;
     tagThreshold: number;
-  }
+  },
+  observableConsequence?: string | null,
+  counterevidence?: string | null
 ): GateResult {
-  const newWords = contentWords(candidateText);
+  if (observableConsequence !== undefined || counterevidence !== undefined) {
+    const testable = checkTestable(observableConsequence, counterevidence);
+    if (!testable.ok) {
+      return {
+        keep: false,
+        reason: testable.reason,
+      };
+    }
+  }
 
   // 1. Full-text embedding cosine >= settings.embeddingThreshold
   let maxEmbSim = 0;
@@ -88,7 +158,19 @@ export function evaluateGate(
     }
   }
 
+  if (maxEmbSim >= settings.embeddingThreshold && embClosest) {
+    return {
+      keep: false,
+      reason: 'Full-text too similar',
+      similarityScore: maxEmbSim,
+      closestMatchIndex: embClosest.index,
+      closestMatchId: embClosest.id,
+      closestMatchText: embClosest.text,
+    };
+  }
+
   // 2. Local word overlap (Jaccard) >= settings.localThreshold
+  const newWords = contentWords(candidateText);
   let maxLocSim = 0;
   let locClosest: AnswerEntry | null = null;
   for (const kept of keptEntries) {
@@ -99,6 +181,17 @@ export function evaluateGate(
         locClosest = kept;
       }
     }
+  }
+
+  if (maxLocSim >= settings.localThreshold && locClosest) {
+    return {
+      keep: false,
+      reason: 'Wording overlap too high',
+      similarityScore: maxLocSim,
+      closestMatchIndex: locClosest.index,
+      closestMatchId: locClosest.id,
+      closestMatchText: locClosest.text,
+    };
   }
 
   // 3. Normalized core idea exactly equal to a kept core idea
@@ -145,28 +238,6 @@ export function evaluateGate(
       closestMatchIndex: coreClosest.index,
       closestMatchId: coreClosest.id,
       closestMatchText: coreClosest.text,
-    };
-  }
-
-  if (maxEmbSim >= settings.embeddingThreshold && embClosest) {
-    return {
-      keep: false,
-      reason: 'Full-text too similar',
-      similarityScore: maxEmbSim,
-      closestMatchIndex: embClosest.index,
-      closestMatchId: embClosest.id,
-      closestMatchText: embClosest.text,
-    };
-  }
-
-  if (maxLocSim >= settings.localThreshold && locClosest) {
-    return {
-      keep: false,
-      reason: 'Wording overlap too high',
-      similarityScore: maxLocSim,
-      closestMatchIndex: locClosest.index,
-      closestMatchId: locClosest.id,
-      closestMatchText: locClosest.text,
     };
   }
 

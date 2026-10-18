@@ -39,9 +39,22 @@ async function safeFetchJsonWithRetry(url: string, options: RequestInit): Promis
       return data;
     } catch (err: any) {
       const status = err.status || err.code || 500;
-      const isRateLimitOrUnavailable = status === 429 || status === 503 || err.message?.includes('429') || err.message?.includes('503') || err.message?.includes('RESOURCE_EXHAUSTED');
+      const errMsg = (err.message || '').toLowerCase();
+      const isNetworkError =
+        err.name === 'TypeError' ||
+        errMsg.includes('failed to fetch') ||
+        errMsg.includes('network') ||
+        errMsg.includes('load failed') ||
+        errMsg.includes('econnrefused');
+      const isRateLimitOrUnavailable =
+        status === 429 ||
+        status === 503 ||
+        errMsg.includes('429') ||
+        errMsg.includes('503') ||
+        errMsg.includes('resource_exhausted') ||
+        errMsg.includes('quota');
 
-      if (isRateLimitOrUnavailable && attempt < delays.length) {
+      if ((isRateLimitOrUnavailable || isNetworkError) && attempt < delays.length) {
         const delay = delays[attempt];
         attempt++;
         await new Promise(r => setTimeout(r, delay));
@@ -51,6 +64,11 @@ async function safeFetchJsonWithRetry(url: string, options: RequestInit): Promis
         const rateErr = new Error('Rate limit exceeded');
         (rateErr as any).status = 429;
         throw rateErr;
+      }
+      if (isNetworkError) {
+        const netErr = new Error('Network connection failed');
+        (netErr as any).status = 503;
+        throw netErr;
       }
       throw err;
     }
@@ -76,16 +94,27 @@ export async function generateAnswer(
   shape: string,
   recentAnswers: string[],
   recentIdeas: string[],
-  highThinking: boolean
-): Promise<{ text: string; coreIdea: string; finishReason?: string; modelUsed?: string; fallbackUsed?: boolean }> {
+  highThinking: boolean,
+  abstraction?: 'concrete' | 'balanced' | 'abstract'
+): Promise<{
+  text: string;
+  coreIdea: string;
+  observableConsequence: string;
+  counterevidence: string;
+  finishReason?: string;
+  modelUsed?: string;
+  fallbackUsed?: boolean;
+}> {
   const data = await safeFetchJsonWithRetry('/api/generate', {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ model, question, shape, recentAnswers, recentIdeas, highThinking }),
+    body: JSON.stringify({ model, question, shape, recentAnswers, recentIdeas, highThinking, abstraction }),
   });
   return {
     text: data.text,
     coreIdea: data.coreIdea,
+    observableConsequence: data.observableConsequence,
+    counterevidence: data.counterevidence,
     finishReason: data.finishReason,
     modelUsed: data.modelUsed,
     fallbackUsed: data.fallbackUsed,
