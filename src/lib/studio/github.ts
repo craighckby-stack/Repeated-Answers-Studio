@@ -4,6 +4,7 @@
  */
 
 import { AnswerEntry } from './types';
+import { sanitizeContent } from './sanitizer';
 
 export function validateRepoFormat(ownerRepo: string): boolean {
   // Format: owner/repo
@@ -25,7 +26,7 @@ export async function commitBatchToGitHub(
   const [owner, repo] = ownerRepo.split('/');
   const cleanBranch = branch || 'main';
 
-  const jsonlLines = entries.map(e => JSON.stringify({
+  const rawJsonl = entries.map(e => JSON.stringify({
     type: 'attempt',
     runId: e.runId || runId,
     index: e.index,
@@ -38,11 +39,18 @@ export async function commitBatchToGitHub(
     embeddingSimilarity: e.similarityScore ?? null,
     tagSimilarity: e.tagSimilarity ?? null,
     closestMatchIndex: e.closestMatchIndex ?? null,
+    shannonEntropy: e.shannonEntropy ?? null,
+    sanitizedSecrets: e.sanitizedSecrets && e.sanitizedSecrets.length > 0 ? e.sanitizedSecrets : null,
+    emgAuditPassed: e.emgAuditPassed ?? null,
+    persona: e.persona || null,
     timestamp: new Date(e.timestamp || Date.now()).toISOString(),
     selectedModel: e.selectedModel,
     modelUsed: e.modelUsed || e.selectedModel,
     fallbackUsed: e.fallbackUsed ?? false,
   })).join('\n') + '\n';
+
+  // EMG Edge Security Sanitization before commit
+  const jsonlLines = sanitizeContent(rawJsonl).sanitized;
 
   const batchFileName = `runs/${runId}/batch-${String(batchIndex).padStart(4, '0')}.jsonl`;
   const contentBase64 = btoa(unescape(encodeURIComponent(jsonlLines)));

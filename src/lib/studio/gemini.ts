@@ -95,7 +95,8 @@ export async function generateAnswer(
   recentAnswers: string[],
   recentIdeas: string[],
   highThinking: boolean,
-  abstraction?: 'concrete' | 'balanced' | 'abstract'
+  abstraction?: 'concrete' | 'balanced' | 'abstract',
+  persona?: string
 ): Promise<{
   text: string;
   coreIdea: string;
@@ -108,7 +109,7 @@ export async function generateAnswer(
   const data = await safeFetchJsonWithRetry('/api/generate', {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ model, question, shape, recentAnswers, recentIdeas, highThinking, abstraction }),
+    body: JSON.stringify({ model, question, shape, recentAnswers, recentIdeas, highThinking, abstraction, persona }),
   });
   return {
     text: data.text,

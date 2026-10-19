@@ -9,6 +9,14 @@ import { evaluateGate, normalizeVector, contentWords, cosineSimilarity, jaccardS
 import { generateSandboxAnswer, getSandboxCapacity } from './sandbox';
 import { commitBatchToGitHub, validateRepoFormat } from './github';
 import { saveRunArchive } from './storage';
+import {
+  calculateShannonEntropy,
+  sanitizeContent,
+  auditEmgCandidate,
+  evaluateEmgSelfStopping,
+  selectEmgNegativeConstraints,
+} from './emg';
+import { getPersonaByIndex, getPersonaById } from './personas';
 
 export interface RunnerCallbacks {
   onStateUpdate: (state: {
@@ -131,7 +139,14 @@ export class StudioRunner {
           break;
         }
 
-        if (this.consecutiveMisses >= this.settings.maxMisses) {
+        if (this.settings.emgHaltOnDecay) {
+          const haltCheck = evaluateEmgSelfStopping(this.entries, this.consecutiveMisses, this.settings.maxMisses);
+          if (haltCheck.shouldHalt) {
+            this.status = 'paused';
+            this.notify(haltCheck.reason);
+            break;
+          }
+        } else if (this.consecutiveMisses >= this.settings.maxMisses) {
           this.status = 'paused';
           this.notify('Paused: Reached maximum consecutive rejections. Adjust thresholds or prompt.');
           break;
@@ -148,6 +163,15 @@ export class StudioRunner {
           let modelUsed: string | undefined = undefined;
           let fallbackUsed: boolean | undefined = undefined;
 
+          // Determine active EMG persona lens
+          let currentPersonaName: string | undefined = undefined;
+          if (this.settings.personaMode === 'rotate') {
+            currentPersonaName = getPersonaByIndex(currentAttempt - 1).name;
+          } else if (this.settings.personaMode && this.settings.personaMode !== 'none') {
+            const p = getPersonaById(this.settings.personaMode);
+            currentPersonaName = p ? p.name : this.settings.personaMode;
+          }
+
           if (this.settings.engine === 'sandbox') {
             const cap = getSandboxCapacity();
             if (currentAttempt > cap) {
@@ -163,20 +187,24 @@ export class StudioRunner {
             modelUsed = 'sandbox';
             await new Promise(r => setTimeout(r, 50));
           } else {
-            const recentIdeas = this.keptEntries
-              .map(e => e.coreIdea)
-              .filter((i): i is string => Boolean(i))
-              .slice(-30);
+            // EMG Epistemic Constraint Selector: diverse previous concepts
+            const rejectedItems = this.entries.filter(e => e.status === 'rejected');
+            const recentIdeas = selectEmgNegativeConstraints(this.keptEntries, rejectedItems, 25);
+            const recentTexts = this.keptEntries.slice(-10).map(e => e.text || '');
 
-            const recentTexts = this.keptEntries.slice(-15).map(e => e.text || '');
+            const sanitizedQuestion = this.settings.emgSanitizeSecrets
+              ? sanitizeContent(this.settings.question).sanitized
+              : this.settings.question;
+
             const genResult = await generateAnswer(
               this.settings.model,
-              this.settings.question,
+              sanitizedQuestion,
               this.settings.shape,
               recentTexts,
               recentIdeas,
               this.settings.highThinking,
-              this.settings.abstraction
+              this.settings.abstraction,
+              currentPersonaName
             );
             text = genResult.text;
             coreIdea = genResult.coreIdea || (text ? text.slice(0, 160) : 'General perspective');
@@ -208,7 +236,64 @@ export class StudioRunner {
             continue;
           }
 
-          // Testability gate for gemini candidates (sandbox engine bypasses this gate)
+          // 1. EMG Edge Security Sanitizer: Redact secrets & high-entropy tokens
+          let detectedSecrets: string[] = [];
+          if (this.settings.emgSanitizeSecrets) {
+            const sanText = sanitizeContent(text);
+            text = sanText.sanitized;
+            detectedSecrets = sanText.detectedSecrets;
+
+            if (coreIdea) {
+              coreIdea = sanitizeContent(coreIdea).sanitized;
+            }
+            if (observableConsequence) {
+              observableConsequence = sanitizeContent(observableConsequence).sanitized;
+            }
+            if (counterevidence) {
+              counterevidence = sanitizeContent(counterevidence).sanitized;
+            }
+          }
+
+          const shannonEntropy = calculateShannonEntropy(text);
+
+          // 2. EMG Mechanistic Density & Information Entropy Audit (gemini only)
+          let emgAuditPassed = true;
+          if (this.settings.engine === 'gemini' && this.settings.emgGatesEnabled) {
+            const emgAudit = auditEmgCandidate(text, coreIdea, this.settings.emgMinEntropy);
+            if (!emgAudit.ok) {
+              emgAuditPassed = false;
+              this.consecutiveMisses++;
+              const rejectedEntry: AnswerEntry = {
+                id: `${this.runId}-${currentAttempt}`,
+                runId: this.runId,
+                index: currentAttempt,
+                text,
+                timestamp: Date.now(),
+                status: 'rejected',
+                coreIdea,
+                observableConsequence,
+                counterevidence,
+                shannonEntropy,
+                sanitizedSecrets: detectedSecrets,
+                emgAuditPassed: false,
+                reason: emgAudit.reason,
+                selectedModel: this.settings.model,
+                modelUsed,
+                fallbackUsed,
+                persona: currentPersonaName,
+              };
+              this.entries.push(rejectedEntry);
+              this.batchBuffer.push(rejectedEntry);
+              if (this.batchBuffer.length >= this.settings.perCommit) {
+                await this.flushBatch(false);
+              }
+              this.callbacks.onEntryAdded(rejectedEntry);
+              this.notify();
+              continue;
+            }
+          }
+
+          // 3. Testability gate for gemini candidates (sandbox engine bypasses this gate)
           if (this.settings.engine === 'gemini') {
             const testable = checkTestable(observableConsequence, counterevidence);
             if (!testable.ok) {
@@ -223,10 +308,14 @@ export class StudioRunner {
                 coreIdea,
                 observableConsequence,
                 counterevidence,
+                shannonEntropy,
+                sanitizedSecrets: detectedSecrets,
+                emgAuditPassed,
                 reason: testable.reason,
                 selectedModel: this.settings.model,
                 modelUsed,
                 fallbackUsed,
+                persona: currentPersonaName,
               };
               this.entries.push(rejectedEntry);
               this.batchBuffer.push(rejectedEntry);
@@ -376,6 +465,10 @@ export class StudioRunner {
             selectedModel: this.settings.model,
             modelUsed,
             fallbackUsed,
+            shannonEntropy,
+            sanitizedSecrets: detectedSecrets,
+            emgAuditPassed,
+            persona: currentPersonaName,
           };
 
           this.entries.push(entry);

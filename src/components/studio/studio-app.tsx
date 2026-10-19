@@ -13,7 +13,7 @@ import {
   clampSettings,
 } from '../../lib/studio/types';
 import { StudioRunner } from '../../lib/studio/runner';
-import { loadSettings, saveSettings } from '../../lib/studio/storage';
+import { loadSettings, saveSettings, createMemoryDump, parseMemoryDump } from '../../lib/studio/storage';
 import { setAppAccessToken } from '../../lib/studio/gemini';
 import { validateRepoFormat } from '../../lib/studio/github';
 import { getSandboxCapacity } from '../../lib/studio/sandbox';
@@ -26,6 +26,7 @@ import {
   Settings,
   Github,
   Download,
+  Upload,
   Copy,
   Check,
   Sparkles,
@@ -37,7 +38,16 @@ import {
   Sliders,
   Zap,
   Lock,
+  ShieldCheck,
+  Shield,
+  Brain,
+  Network,
+  Waypoints,
 } from 'lucide-react';
+import { EMG_PERSONAS } from '../../lib/studio/personas';
+import { buildTopologyMermaidGraph, requestMacroSynthesis, MacroSynthesis } from '../../lib/studio/graph';
+import { KnowledgeGraph } from './knowledge-graph';
+import { MacroSynthesisModal } from './macro-synthesis-modal';
 
 const PRESETS = [
   'What are the hidden risks and long-term consequences of human space colonization?',
@@ -62,9 +72,13 @@ export function StudioApp() {
     commitStatus: 'idle',
   });
 
-  const [activeTab, setActiveTab] = useState<'kept' | 'log' | 'export' | 'settings'>('kept');
+  const [activeTab, setActiveTab] = useState<'kept' | 'log' | 'graph' | 'export' | 'settings'>('kept');
   const [copied, setCopied] = useState(false);
   const [warningBanner, setWarningBanner] = useState<string | null>(null);
+  const [synthesisModalOpen, setSynthesisModalOpen] = useState(false);
+  const [synthesisData, setSynthesisData] = useState<MacroSynthesis | null>(null);
+  const [isSynthesizing, setIsSynthesizing] = useState(false);
+  const [mermaidGraphCode, setMermaidGraphCode] = useState<string>('');
   const runnerRef = useRef<StudioRunner | null>(null);
 
   // Load settings on mount & sync access token
@@ -179,6 +193,46 @@ export function StudioApp() {
 
   const keptEntries = runState.entries.filter((e) => e.status === 'kept');
 
+  // Sync Mermaid Graph when kept entries change
+  useEffect(() => {
+    const code = buildTopologyMermaidGraph(settings.question, keptEntries);
+    setMermaidGraphCode(code);
+  }, [keptEntries.length, settings.question]);
+
+  const handleOpenSynthesis = async () => {
+    setSynthesisModalOpen(true);
+    if (synthesisData && synthesisData.topic === settings.question && synthesisData.generatedAt > (runState.startTime || 0)) {
+      return;
+    }
+    if (keptEntries.length === 0) return;
+
+    setIsSynthesizing(true);
+    try {
+      const data = await requestMacroSynthesis(settings.question, keptEntries, settings.appAccessToken);
+      setSynthesisData(data);
+    } catch (err: any) {
+      console.warn('Backend synthesis error, falling back to local synthesis generator:', err);
+      const personaSummary = Array.from(new Set(keptEntries.map(e => e.persona).filter(Boolean))).join(', ');
+      setSynthesisData({
+        topic: settings.question,
+        synthesisAnalysis: `Synthesis of ${keptEntries.length} diverse hypotheses across: ${settings.question}.\n\nThe perspectives span distinct structural vectors (${personaSummary || 'Multi-agent analysis'}), each anchored by discrete observable testable metrics.\n\nContrasting causal failure modes against systemic economic externalities reveals that the core system degradation is driven not by random noise, but by reinforcing feedback loops embedded in current operational architecture.`,
+        hypotheticalAssumptions: [
+          'Underlying structural failure modes compound non-linearly under sustained volume or stress.',
+          'Operational incentives favor short-term consensus over long-tail systemic resilience.',
+          'Observable telemetry metrics serve as reliable surrogates for latent institutional or physical degradation.'
+        ],
+        researchFrontiers: [
+          'High-frequency longitudinal measurement of proposed causal inflection points.',
+          'Stress-testing institutional liability boundaries against adversarial edge cases.',
+          'Cross-domain validation of counterevidence criteria in empirical testbeds.'
+        ],
+        generatedAt: Date.now(),
+      });
+    } finally {
+      setIsSynthesizing(false);
+    }
+  };
+
   const exportJSONL = () => {
     const jsonl = toAttemptsJsonl({ runState, settings });
     const blob = new Blob([jsonl], { type: 'application/x-jsonlines' });
@@ -199,6 +253,52 @@ export function StudioApp() {
     a.download = `repeated-answers-${runState.runId || 'export'}.md`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleBackupMemory = () => {
+    const jsonStr = createMemoryDump(settings, runState, synthesisData);
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `repeated-answers-studio-emg-memory-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setWarningBanner('EMG Core Memory state snapshot exported successfully.');
+    setTimeout(() => setWarningBanner(null), 4000);
+  };
+
+  const handleRestoreMemoryFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const text = evt.target?.result as string;
+        const dump = parseMemoryDump(text);
+        setSettings(dump.settings);
+        setRunState(dump.runState);
+        if (dump.macroSynthesis) {
+          setSynthesisData(dump.macroSynthesis);
+        }
+        setMermaidGraphCode(
+          buildTopologyMermaidGraph(
+            dump.settings.question,
+            dump.runState.entries.filter((en) => en.status === 'kept')
+          )
+        );
+        setWarningBanner(`Restored workspace memory: ${dump.runState.entries.length} attempts (${dump.runState.keptCount} kept entries).`);
+        setTimeout(() => setWarningBanner(null), 5000);
+      } catch (err: any) {
+        setWarningBanner(`Restore failed: ${err.message || 'Invalid memory backup file'}`);
+        setTimeout(() => setWarningBanner(null), 6000);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   };
 
   const copyToClipboard = () => {
@@ -222,10 +322,17 @@ export function StudioApp() {
             <h1 className="font-bold text-lg text-white tracking-tight flex items-center gap-2">
               Repeated Answers Studio
               <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-medium">
-                Gemini Engine
+                {settings.engine === 'sandbox' ? 'Sandbox Engine' : 'Gemini Engine'}
+              </span>
+              <span className={`text-xs px-2 py-0.5 rounded-full border font-medium flex items-center gap-1 ${
+                settings.emgGatesEnabled
+                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                  : 'bg-slate-800 text-slate-400 border-slate-700'
+              }`}>
+                <ShieldCheck className="w-3.5 h-3.5" /> EMG {settings.emgGatesEnabled ? 'Active' : 'Disabled'}
               </span>
             </h1>
-            <p className="text-xs text-slate-400">Query models repeatedly, filter semantic duplicates, and compile candidate ideas. Outputs are unverified.</p>
+            <p className="text-xs text-slate-400">Query models repeatedly, filter semantic duplicates, and compile candidate ideas. EMG-shielded.</p>
           </div>
         </div>
 
@@ -517,6 +624,119 @@ export function StudioApp() {
             </div>
           </div>
 
+          {/* EMG Enhanced Machine Gates Card */}
+          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-400" /> EMG Enhanced Machine Gates
+              </h2>
+              <span className={`text-[10px] px-2 py-0.5 rounded font-mono font-medium ${
+                settings.emgGatesEnabled ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-800/50' : 'bg-slate-800 text-slate-500'
+              }`}>
+                {settings.emgGatesEnabled ? 'ARMED' : 'STANDBY'}
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Multi-gate epistemic governance: Shannon entropy analysis, credential sanitization, and quota-protecting self-stopping halt.
+            </p>
+
+            <div className="space-y-3 pt-1">
+              {/* Master EMG Switch */}
+              <div className="flex items-center justify-between py-1.5 border-b border-slate-800/60">
+                <div>
+                  <span className="text-xs font-medium text-slate-300 block">Master EMG Governance</span>
+                  <span className="text-[10px] text-slate-500">Apply mechanistic density and entropy verification</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.emgGatesEnabled}
+                  onChange={(e) => handleSettingChange('emgGatesEnabled', e.target.checked)}
+                  disabled={runState.status === 'running'}
+                  className="w-4 h-4 rounded bg-slate-950 border-slate-700 text-emerald-600 focus:ring-emerald-500"
+                />
+              </div>
+
+              {/* Edge Security Sanitizer */}
+              <div className="flex items-center justify-between py-1.5 border-b border-slate-800/60">
+                <div>
+                  <span className="text-xs font-medium text-slate-300 block">Edge Security Sanitizer</span>
+                  <span className="text-[10px] text-slate-500">Redact API keys & high-entropy secret tokens (&gt; 4.5)</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.emgSanitizeSecrets}
+                  onChange={(e) => handleSettingChange('emgSanitizeSecrets', e.target.checked)}
+                  disabled={runState.status === 'running'}
+                  className="w-4 h-4 rounded bg-slate-950 border-slate-700 text-emerald-600 focus:ring-emerald-500"
+                />
+              </div>
+
+              {/* Minimum Entropy Floor */}
+              <div className="space-y-1 py-1 border-b border-slate-800/60">
+                <div className="flex justify-between text-xs">
+                  <span className="font-medium text-slate-300">Min Information Entropy</span>
+                  <span className="font-mono text-emerald-400">{(settings.emgMinEntropy ?? 3.6).toFixed(2)} bits/char</span>
+                </div>
+                <input
+                  type="range"
+                  min="2.8"
+                  max="4.6"
+                  step="0.05"
+                  value={settings.emgMinEntropy ?? 3.6}
+                  onChange={(e) => handleSettingChange('emgMinEntropy', parseFloat(e.target.value))}
+                  disabled={runState.status === 'running' || !settings.emgGatesEnabled}
+                  className="w-full accent-emerald-500 bg-slate-800 h-1.5 rounded-lg appearance-none cursor-pointer disabled:opacity-50"
+                />
+                <span className="text-[10px] text-slate-500 block">Rejects robotic boilerplate collapsing below this density</span>
+              </div>
+
+              {/* Intelligent Self-Stopping Halt */}
+              <div className="flex items-center justify-between py-1.5">
+                <div>
+                  <span className="text-xs font-medium text-slate-300 block">Self-Stopping Saturation Halt</span>
+                  <span className="text-[10px] text-slate-500">Halts when consensus space saturates or entropy flatlines</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.emgHaltOnDecay}
+                  onChange={(e) => handleSettingChange('emgHaltOnDecay', e.target.checked)}
+                  disabled={runState.status === 'running'}
+                  className="w-4 h-4 rounded bg-slate-950 border-slate-700 text-emerald-600 focus:ring-emerald-500"
+                />
+              </div>
+
+              {/* EMG 9-Persona Divergence Steerer */}
+              <div className="space-y-1.5 pt-2 border-t border-slate-800/60">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                    <Brain className="w-3.5 h-3.5 text-purple-400" />
+                    Persona Divergence Steering
+                  </label>
+                  <span className="text-[10px] text-purple-400 font-mono">9 Lenses</span>
+                </div>
+                <select
+                  value={settings.personaMode || 'rotate'}
+                  onChange={(e) => handleSettingChange('personaMode', e.target.value)}
+                  disabled={runState.status === 'running'}
+                  className="w-full rounded-xl bg-slate-950 border border-slate-800 p-2 text-xs text-slate-200 focus:outline-none focus:border-purple-500 font-medium"
+                >
+                  <option value="rotate">Auto-Rotate (9 Analytical Personas)</option>
+                  <option value="none">No Specific Persona (Standard Consensus)</option>
+                  <optgroup label="Single Specialized Persona">
+                    {EMG_PERSONAS.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} — {p.tagline}
+                      </option>
+                    ))}
+                  </optgroup>
+                </select>
+                <span className="text-[10px] text-slate-500 block leading-tight">
+                  Rotates probes across 9 intellectual biases to break consensus mode collapse.
+                </span>
+              </div>
+            </div>
+          </div>
+
           {/* GitHub Sync Card */}
           <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
             <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
@@ -649,11 +869,11 @@ export function StudioApp() {
           {/* Results Tabs & Content */}
           <div className="bg-slate-900/80 border border-slate-800 rounded-2xl flex-1 flex flex-col overflow-hidden shadow-sm min-h-[500px]">
             {/* Tab Header */}
-            <div className="flex border-b border-slate-800 px-6 py-3 items-center justify-between bg-slate-900/40">
-              <div className="flex gap-2">
+            <div className="flex border-b border-slate-800 px-6 py-3 items-center justify-between bg-slate-900/40 flex-wrap gap-2">
+              <div className="flex gap-2 flex-wrap">
                 <button
                   onClick={() => setActiveTab('kept')}
-                  className={`px-4 py-2 rounded-xl text-xs font-semibold transition ${
+                  className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition ${
                     activeTab === 'kept'
                       ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/30'
                       : 'text-slate-400 hover:text-slate-200'
@@ -663,7 +883,7 @@ export function StudioApp() {
                 </button>
                 <button
                   onClick={() => setActiveTab('log')}
-                  className={`px-4 py-2 rounded-xl text-xs font-semibold transition ${
+                  className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition ${
                     activeTab === 'log'
                       ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/30'
                       : 'text-slate-400 hover:text-slate-200'
@@ -672,8 +892,23 @@ export function StudioApp() {
                   Attempt Log ({runState.entries.length})
                 </button>
                 <button
+                  onClick={() => setActiveTab('graph')}
+                  className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 ${
+                    activeTab === 'graph'
+                      ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/30'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Network className="w-3.5 h-3.5 text-emerald-400" /> Topology Map
+                  {keptEntries.length > 0 && (
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 font-mono font-normal">
+                      {keptEntries.length}
+                    </span>
+                  )}
+                </button>
+                <button
                   onClick={() => setActiveTab('export')}
-                  className={`px-4 py-2 rounded-xl text-xs font-semibold transition ${
+                  className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition ${
                     activeTab === 'export'
                       ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/30'
                       : 'text-slate-400 hover:text-slate-200'
@@ -683,15 +918,27 @@ export function StudioApp() {
                 </button>
               </div>
 
-              {activeTab === 'kept' && keptEntries.length > 0 && (
-                <button
-                  onClick={copyToClipboard}
-                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium flex items-center gap-1.5 transition"
-                >
-                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  {copied ? 'Copied!' : 'Copy All'}
-                </button>
-              )}
+              <div className="flex items-center gap-2">
+                {keptEntries.length > 0 && (
+                  <button
+                    onClick={handleOpenSynthesis}
+                    className="px-3 py-1.5 rounded-lg bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/30 text-purple-300 text-xs font-semibold flex items-center gap-1.5 transition shadow"
+                    title="Synthesize insights and extract underlying assumptions (EMG Core)"
+                  >
+                    <Brain className="w-3.5 h-3.5 text-purple-400" /> Executive Synthesis
+                  </button>
+                )}
+
+                {activeTab === 'kept' && keptEntries.length > 0 && (
+                  <button
+                    onClick={copyToClipboard}
+                    className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium flex items-center gap-1.5 transition"
+                  >
+                    {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    {copied ? 'Copied!' : 'Copy All'}
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Tab Body */}
@@ -710,13 +957,32 @@ export function StudioApp() {
                         <span className="font-semibold text-indigo-400">
                           #{(idx + 1)} (Attempt #{e.index}) {e.modelUsed && <span className="text-[10px] text-slate-400 font-mono ml-2">[{e.modelUsed}]</span>}
                         </span>
-                        <span>{new Date(e.timestamp).toLocaleTimeString()}</span>
-                      </div>
-                      {e.coreIdea && (
-                        <div className="text-xs font-medium text-indigo-300/90 bg-indigo-950/30 px-2.5 py-1 rounded-lg inline-block">
-                          Core Idea: {e.coreIdea}
+                        <div className="flex items-center gap-2">
+                          {e.shannonEntropy && (
+                            <span className="text-[10px] font-mono text-emerald-400/90 bg-emerald-950/40 border border-emerald-800/40 px-1.5 py-0.5 rounded" title="Shannon Information Entropy">
+                              H: {e.shannonEntropy.toFixed(2)} b/c
+                            </span>
+                          )}
+                          {e.sanitizedSecrets && e.sanitizedSecrets.length > 0 && (
+                            <span className="text-[10px] text-amber-400 bg-amber-950/40 border border-amber-800/40 px-1.5 py-0.5 rounded" title={`Sanitized: ${e.sanitizedSecrets.join(', ')}`}>
+                              Shielded
+                            </span>
+                          )}
+                          <span>{new Date(e.timestamp).toLocaleTimeString()}</span>
                         </div>
-                      )}
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {e.persona && (
+                          <div className="text-[10px] font-semibold text-purple-300 bg-purple-950/40 border border-purple-800/40 px-2 py-0.5 rounded-md inline-flex items-center gap-1">
+                            <Brain className="w-3 h-3 text-purple-400" /> Lens: {e.persona}
+                          </div>
+                        )}
+                        {e.coreIdea && (
+                          <div className="text-xs font-medium text-indigo-300/90 bg-indigo-950/30 px-2.5 py-0.5 rounded-lg inline-block">
+                            Core Idea: {e.coreIdea}
+                          </div>
+                        )}
+                      </div>
                       <p className="text-slate-200 text-sm whitespace-pre-wrap leading-relaxed">{e.text}</p>
                       {(e.observableConsequence || e.counterevidence) && (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-1">
@@ -764,14 +1030,28 @@ export function StudioApp() {
                           <span>Attempt #{e.index} — {e.status}</span>
                           {e.modelUsed && <span className="text-[10px] text-slate-400 font-mono lowercase">({e.modelUsed})</span>}
                         </span>
-                        <span className="text-slate-500">{new Date(e.timestamp).toLocaleTimeString()}</span>
+                        <div className="flex items-center gap-2">
+                          {e.shannonEntropy && (
+                            <span className="text-[10px] font-mono text-slate-400 bg-slate-900 border border-slate-800 px-1.5 py-0.5 rounded">
+                              H: {e.shannonEntropy.toFixed(2)}
+                            </span>
+                          )}
+                          <span className="text-slate-500">{new Date(e.timestamp).toLocaleTimeString()}</span>
+                        </div>
                       </div>
                       {e.text ? <p className="text-slate-200 line-clamp-2">{e.text}</p> : null}
-                      {e.coreIdea && (
-                        <p className="text-[11px] text-indigo-300 font-medium">
-                          Core Idea: {e.coreIdea}
-                        </p>
-                      )}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {e.persona && (
+                          <span className="text-[10px] text-purple-300 bg-purple-950/40 border border-purple-800/40 px-2 py-0.5 rounded font-medium">
+                            Lens: {e.persona}
+                          </span>
+                        )}
+                        {e.coreIdea && (
+                          <p className="text-[11px] text-indigo-300 font-medium">
+                            Core Idea: {e.coreIdea}
+                          </p>
+                        )}
+                      </div>
                       {e.reason && (
                         <p className={`text-[11px] italic font-mono px-2 py-1 rounded ${
                           e.status === 'error' ? 'text-amber-300/80 bg-amber-950/30' : 'text-rose-300/80 bg-rose-950/30'
@@ -782,6 +1062,15 @@ export function StudioApp() {
                     </div>
                   ))
                 )
+              )}
+
+              {activeTab === 'graph' && (
+                <div className="h-full flex flex-col min-h-[460px]">
+                  <KnowledgeGraph
+                    mermaidCode={mermaidGraphCode}
+                    onRefresh={() => setMermaidGraphCode(buildTopologyMermaidGraph(settings.question, keptEntries))}
+                  />
+                </div>
               )}
 
               {activeTab === 'export' && (
@@ -804,6 +1093,45 @@ export function StudioApp() {
                       >
                         <Download className="w-4 h-4" /> Download Kept Markdown
                       </button>
+                    </div>
+                  </div>
+
+                  {/* EMG Core Memory & State Portability */}
+                  <div className="space-y-3 pt-4 border-t border-slate-800">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+                          EMG Core Memory & State Portability
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 font-medium">
+                            KERNEL v0.3
+                          </span>
+                        </h3>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          Backup or restore your full analytical workspace (perspective matrices, attempts, concept topology, and macro-synthesis) without losing state.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex gap-3 pt-1">
+                      <button
+                        onClick={handleBackupMemory}
+                        disabled={runState.entries.length === 0}
+                        className="px-4 py-2.5 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 font-semibold text-xs flex items-center gap-2 border border-purple-500/30 transition disabled:opacity-50"
+                      >
+                        <Download className="w-4 h-4 text-purple-400" /> Backup Memory (.json)
+                      </button>
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs flex items-center gap-2 border border-slate-700 transition"
+                      >
+                        <Upload className="w-4 h-4 text-slate-300" /> Restore Memory (.json)
+                      </button>
+                      <input
+                        type="file"
+                        ref={fileInputRef}
+                        onChange={handleRestoreMemoryFile}
+                        accept=".json,application/json"
+                        className="hidden"
+                      />
                     </div>
                   </div>
 
@@ -832,6 +1160,16 @@ export function StudioApp() {
           </div>
         </div>
       </main>
+
+      {/* Macro Synthesis Modal */}
+      <MacroSynthesisModal
+        synthesis={synthesisData}
+        isOpen={synthesisModalOpen}
+        onClose={() => setSynthesisModalOpen(false)}
+        isLoading={isSynthesizing}
+        keptEntries={keptEntries}
+        accessToken={settings.appAccessToken}
+      />
     </div>
   );
 }

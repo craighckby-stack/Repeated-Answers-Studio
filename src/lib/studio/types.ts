@@ -22,6 +22,11 @@ export interface StudioSettings {
   ghToken: string;
   appAccessToken: string;     // for server auth if APP_ACCESS_TOKEN is set
   useLlmJudge: boolean;       // LLM-as-judge novelty check validation step
+  emgGatesEnabled: boolean;   // Enable EMG Enhanced Machine Gates engine
+  emgSanitizeSecrets: boolean;// Redact API keys and high-entropy secrets (> 4.5)
+  emgMinEntropy: number;      // Minimum Shannon entropy floor (bits/char)
+  emgHaltOnDecay: boolean;    // Automatic self-stopping on entropy decay / saturation
+  personaMode: string;        // 'rotate' (9 personas), 'none', or specific persona ID
 }
 
 export const MODELS = [
@@ -51,6 +56,11 @@ export const DEFAULT_SETTINGS: StudioSettings = {
   ghToken: '',
   appAccessToken: '',
   useLlmJudge: true,
+  emgGatesEnabled: true,
+  emgSanitizeSecrets: true,
+  emgMinEntropy: 3.6,
+  emgHaltOnDecay: true,
+  personaMode: 'rotate',
 };
 
 export function clampSettings(settings: StudioSettings): StudioSettings {
@@ -69,6 +79,11 @@ export function clampSettings(settings: StudioSettings): StudioSettings {
     target: Math.max(1, Math.round(settings.target || 1)),
     maxMisses: Math.max(1, Math.round(settings.maxMisses || 1)),
     perCommit: Math.max(1, Math.round(settings.perCommit || 1)),
+    emgGatesEnabled: settings.emgGatesEnabled ?? true,
+    emgSanitizeSecrets: settings.emgSanitizeSecrets ?? true,
+    emgMinEntropy: clamp(settings.emgMinEntropy ?? 3.6, 2.5, 5.0),
+    emgHaltOnDecay: settings.emgHaltOnDecay ?? true,
+    personaMode: settings.personaMode || 'rotate',
   };
 }
 
@@ -95,6 +110,10 @@ export interface AnswerEntry {
   fallbackUsed?: boolean;
   observableConsequence?: string | null;
   counterevidence?: string | null;
+  shannonEntropy?: number;
+  sanitizedSecrets?: string[];
+  emgAuditPassed?: boolean;
+  persona?: string;
 }
 
 export interface RunState {

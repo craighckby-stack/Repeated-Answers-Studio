@@ -8,6 +8,16 @@ import assert from 'node:assert';
 import { evaluateGate, checkTestable, jaccardSimilarity, contentWords, normalizeVector, cosineSimilarity } from '../src/lib/studio/novelty';
 import { AnswerEntry, DEFAULT_SETTINGS, clampSettings } from '../src/lib/studio/types';
 import { StudioRunner } from '../src/lib/studio/runner';
+import {
+  calculateShannonEntropy,
+  sanitizeContent,
+  auditEmgCandidate,
+  evaluateEmgSelfStopping,
+  selectEmgNegativeConstraints,
+} from '../src/lib/studio/emg';
+import { EMG_PERSONAS, getPersonaByIndex, formatPersonaDirective } from '../src/lib/studio/personas';
+import { buildTopologyMermaidGraph } from '../src/lib/studio/graph';
+import { createMemoryDump, parseMemoryDump } from '../src/lib/studio/storage';
 
 test('Gate 3: Exact core-idea match is rejected', () => {
   const kept: AnswerEntry[] = [
@@ -313,6 +323,203 @@ test('Question input lines limit: allows up to 1000 lines', () => {
   assert.strictEqual(text1001.split('\n').length, 1001);
   assert.ok(text1001.split('\n').length > 1000);
 });
+
+test('EMG: calculateShannonEntropy measures information density accurately', () => {
+  assert.strictEqual(calculateShannonEntropy(''), 0);
+  assert.strictEqual(calculateShannonEntropy('aaaaaaa'), 0);
+
+  // Repetitive text has low entropy
+  const lowEntropy = calculateShannonEntropy('abababababababababababab');
+  assert.ok(lowEntropy <= 1.0);
+
+  // Natural diverse English prose has high entropy (~ 4.0 - 4.8 bits/char)
+  const naturalText = 'What unexpected structural failure modes cause large distributed microservice systems to experience cascading collapse?';
+  const naturalEntropy = calculateShannonEntropy(naturalText);
+  assert.ok(naturalEntropy >= 4.0 && naturalEntropy <= 5.0, `Expected entropy between 4 and 5, got ${naturalEntropy}`);
+});
+
+test('EMG: sanitizeContent redacts API keys and high-entropy secret tokens', () => {
+  const textWithSecrets = `
+    Here is our secret configuration:
+    Google key: AIzaSyD94Jfk290-xKL88390192jfkdls_92301
+    GitHub token: ghp_111122223333444455556666777788889999
+    Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgN_pT_V_A_bC_dE_fG_hI_jK
+  `;
+
+  const result = sanitizeContent(textWithSecrets);
+  assert.ok(result.redactedCount >= 2);
+  assert.ok(!result.sanitized.includes('AIzaSyD94Jfk290-xKL88390192jfkdls_92301'));
+  assert.ok(!result.sanitized.includes('ghp_111122223333444455556666777788889999'));
+  assert.ok(result.sanitized.includes('[REDACTED_GOOGLE_KEY]'));
+  assert.ok(result.sanitized.includes('[REDACTED_GITHUB_TOKEN]'));
+});
+
+test('EMG: auditEmgCandidate enforces mass preservation and entropy floor', () => {
+  // Too short
+  const shortResult = auditEmgCandidate('Too short', 'Brief idea');
+  assert.strictEqual(shortResult.ok, false);
+  assert.ok(shortResult.reason?.includes('Mass Preservation'));
+
+  // Low entropy robotic boilerplate
+  const roboticText = 'test test test test test test test test test test test test test test test test test test test test';
+  const roboticResult = auditEmgCandidate(roboticText, 'Repetitive idea', 3.6);
+  assert.strictEqual(roboticResult.ok, false);
+  assert.ok(roboticResult.reason?.includes('Entropy Floor'));
+
+  // Valid high-density mechanistic hypothesis
+  const validText = 'Galactic cosmic radiation triggers microvascular endothelial apoptosis in deep subcortical cerebral pathways during transit.';
+  const validResult = auditEmgCandidate(validText, 'Endothelial apoptosis', 3.6);
+  assert.strictEqual(validResult.ok, true);
+  assert.ok(validResult.entropy >= 3.6);
+});
+
+test('EMG: evaluateEmgSelfStopping triggers clean halt on saturation and entropy flatline', () => {
+  // Reaching max misses
+  const halt1 = evaluateEmgSelfStopping([], 20, 20);
+  assert.strictEqual(halt1.shouldHalt, true);
+  assert.ok(halt1.reason?.includes('Consensus saturation'));
+
+  // Under limit with normal entries
+  const normalEntries: AnswerEntry[] = Array.from({ length: 12 }, (_, i) => ({
+    id: `r-${i}`,
+    runId: 'r',
+    index: i,
+    text: `Varied unique concept ${i} discussing physiological space colonization obstacles ${i * 42}.`,
+    timestamp: Date.now(),
+    status: 'rejected',
+  }));
+  const noHalt = evaluateEmgSelfStopping(normalEntries, 3, 20);
+  assert.strictEqual(noHalt.shouldHalt, false);
+});
+
+test('EMG Core: 9 personas defined and cycle deterministically', () => {
+  assert.strictEqual(EMG_PERSONAS.length, 9);
+  const ids = EMG_PERSONAS.map(p => p.id);
+  assert.ok(ids.includes('causal_logician'));
+  assert.ok(ids.includes('economist'));
+  assert.ok(ids.includes('futurist'));
+  assert.ok(ids.includes('ethicist'));
+  assert.ok(ids.includes('legal_expert'));
+  assert.ok(ids.includes('historian'));
+  assert.ok(ids.includes('philosopher'));
+  assert.ok(ids.includes('data_analyst'));
+  assert.ok(ids.includes('social_scientist'));
+
+  // Cycles deterministically by attempt index
+  assert.strictEqual(getPersonaByIndex(0).id, 'causal_logician');
+  assert.strictEqual(getPersonaByIndex(1).id, 'economist');
+  assert.strictEqual(getPersonaByIndex(9).id, 'causal_logician');
+
+  // Formats directive correctly
+  const directive = formatPersonaDirective('economist');
+  assert.ok(directive.includes('ECONOMIST'));
+  assert.ok(directive.includes('externalities'));
+});
+
+test('EMG Core: buildTopologyMermaidGraph generates valid top-down Mermaid concept graph', () => {
+  const kept: AnswerEntry[] = [
+    {
+      id: 'k-1',
+      runId: 'r-1',
+      index: 1,
+      text: 'Orbital debris cascading chain collision models.',
+      coreIdea: 'Kessler Syndrome Feedback',
+      observableConsequence: 'Telemetry sensors show 14% increase in sub-millimeter impacts',
+      persona: 'Causal Logician',
+      status: 'kept',
+      timestamp: Date.now(),
+    },
+    {
+      id: 'k-2',
+      runId: 'r-1',
+      index: 2,
+      text: 'Unpriced launch externalities cause tragedy of the orbital commons.',
+      coreIdea: 'Orbital Commons Tragedy',
+      observableConsequence: 'Collision cleanup bond markets fail to clear due to jurisdiction gaps',
+      persona: 'Economist',
+      status: 'kept',
+      timestamp: Date.now(),
+    },
+  ];
+
+  const graph = buildTopologyMermaidGraph('Space Debris Risks', kept);
+  assert.ok(graph.startsWith('graph TD'));
+  assert.ok(graph.includes('ROOT(["Space Debris Risks"])'));
+  assert.ok(graph.includes('Causal Logician'));
+  assert.ok(graph.includes('Economist'));
+  assert.ok(graph.includes('Kessler Syndrome Feedback'));
+  assert.ok(graph.includes('predicts'));
+
+  // Empty entries test
+  const emptyGraph = buildTopologyMermaidGraph('Empty', []);
+  assert.ok(emptyGraph.includes('EMPTY'));
+});
+
+test('EMG Core: createMemoryDump packages state safely and strips secret tokens', () => {
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    question: 'Why do distributed systems fail? Secret: AIzaSyD94Jfk290-xKL88390192jfkdls_92301',
+    ghToken: 'ghp_secretTokenDoNotLeak1234567890',
+    appAccessToken: 'secretAccessSecret999',
+  };
+
+  const runState = {
+    runId: 'test-run-123',
+    status: 'idle' as const,
+    target: 10,
+    entries: [
+      {
+        id: 'e-1',
+        runId: 'test-run-123',
+        index: 1,
+        text: 'Cascading network partition latency. Key: AIzaSyHiddenCredentials1234567',
+        status: 'kept' as const,
+        timestamp: Date.now(),
+      },
+    ],
+    keptCount: 1,
+    rejectedCount: 0,
+    errorCount: 0,
+    consecutiveMisses: 0,
+    startTime: Date.now(),
+    lastCommitBatch: 1,
+    commitStatus: 'idle' as const,
+  };
+
+  const macroSynthesis = {
+    topic: 'Why do distributed systems fail?',
+    synthesisAnalysis: 'Systemic synthesis analysis...',
+    hypotheticalAssumptions: ['Networks are asynchronous'],
+    researchFrontiers: ['Zero-downtime leader election'],
+    generatedAt: Date.now(),
+  };
+
+  const rawJson = createMemoryDump(settings, runState, macroSynthesis);
+  assert.ok(typeof rawJson === 'string');
+
+  // Verify secret tokens are never leaked into the JSON dump
+  assert.ok(!rawJson.includes('ghp_secretTokenDoNotLeak1234567890'));
+  assert.ok(!rawJson.includes('secretAccessSecret999'));
+  assert.ok(!rawJson.includes('AIzaSyFakeToken1234567890abcdef'));
+  assert.ok(rawJson.includes('[REDACTED_GOOGLE_KEY]'));
+
+  // Test restoration
+  const restored = parseMemoryDump(rawJson);
+  assert.strictEqual(restored.kernel, 'EMG-KERNEL-v0.3');
+  assert.strictEqual(restored.runState.entries.length, 1);
+  assert.strictEqual(restored.runState.keptCount, 1);
+  assert.strictEqual(restored.macroSynthesis.hypotheticalAssumptions.length, 1);
+  assert.strictEqual(restored.settings.ghToken, '');
+  assert.strictEqual(restored.settings.appAccessToken, '');
+});
+
+test('EMG Core: parseMemoryDump gracefully rejects corrupted JSON', () => {
+  assert.throws(() => parseMemoryDump('invalid { non-json string'), /Invalid JSON format/);
+  assert.throws(() => parseMemoryDump('null'), /not a valid JSON object/);
+});
+
+
+
 
 
 

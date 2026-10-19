@@ -70,9 +70,17 @@ High-yield questions have **wide, multi-causal hypothesis spaces** where dozens 
   3. **Exact Core Idea Match**: Rejects exact duplicates of previous core idea labels.
   4. **Core Idea Embedding Cosine Similarity** (Default threshold: `0.90`, adjustable in Settings).
   5. **LLM Conceptual Judge**: Optional final validation check via `gemini-3.5-flash-lite` to ensure the candidate introduces a genuinely new conceptual claim. If the judge is unavailable, candidates are not kept.
+- **EMG Enhanced Machine Gates & Ephemeral Mind Gem Core Integration**:
+  - **9-Persona Intellectual Steering**: Decomposes repetitive probing across nine specialized intellectual biases (*Causal Logician*, *Economist*, *Futurist*, *Ethicist*, *Legal Expert*, *Historian*, *Philosopher*, *Data Analyst*, *Social Scientist*) to break semantic mode collapse.
+  - **Topological Concept Knowledge Graph**: Interactively renders kept insights, causal pathways, and observable predictions as a structured Mermaid JS vector network map.
+  - **Executive Synthesis & Assumption Mining**: Cross-synthesizes divergent candidate insights into an overarching executive analysis and uncovers 3–5 foundational epistemic assumptions.
+  - **Edge Security Sanitizer**: Continuous regex & Shannon entropy scanning ($\mathcal{H} > 4.5$) that intercepts and redacts API keys (`AIzaSy...`, `ghp_`, `sk-`, `AKIA...`), bearer tokens, and credentials in prompts, generated answers, and GitHub commits.
+  - **Information Density Floor**: Evaluates candidate responses against Shannon information entropy ($\mathcal{H} \ge 3.6\text{ bits/char}$) and mechanistic mass to prevent trivial platitude collapse.
+  - **Interactive Conversational Mind**: Direct analytical chat shell querying the synthesized collective memory block across all 9 perspective streams.
+  - **Memory & State Portability (Backup / Restore Memory)**: Package and download entire analytical state blocks (settings, attempt history, kept matrices, concept graphs, and synthesis) as sanitized `.json` files, and re-inject them into any session instantly without re-burning API quota.
 - **Robust Rate Limiting & Pausing**: Configurable via `RATE_LIMIT_PER_MINUTE` (default `60`). Runs automatically pause on rate limits and can be resumed safely.
 - **GitHub Sync**: Automatically batch-commits your attempt history (kept, rejected, and error entries) and Markdown export manifests directly to any GitHub repository.
-- **Export Options**: Download full attempt logs as JSONL or compiled kept answers as clean Markdown.
+- **Export Options**: Download full attempt logs as JSONL, compiled kept answers as clean Markdown with embedded Shannon entropy metrics and sanitization stamps, or portable EMG Core memory dumps.
 
 ---
 

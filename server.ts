@@ -161,7 +161,7 @@ async function startServer() {
 
   app.post('/api/generate', validateGenerateInput, async (req, res) => {
     try {
-      const { model, question, shape, recentAnswers, recentIdeas, highThinking, abstraction } = req.body;
+      const { model, question, shape, recentAnswers, recentIdeas, highThinking, abstraction, persona } = req.body;
       const requestedModel = model || 'gemini-3.5-flash';
 
       let shapeInstruction = '';
@@ -179,6 +179,10 @@ async function startServer() {
       }
       abstractionInstruction += " Frame the answer as a hypothesis, saying 'if X, then Y' where possible. Do not present it as established.";
 
+      const personaInstruction = persona && typeof persona === 'string'
+        ? `\n\nINTELLECTUAL LENS [${persona.toUpperCase()}]:\nAnalyze this problem strictly through the specialized methods, models, and analytical biases of a ${persona}. Focus on trade-offs and non-obvious mechanisms specific to this domain.`
+        : '';
+
       const avoidListStr = recentAnswers && recentAnswers.length > 0
         ? `\n\nCRITICAL: Do NOT repeat these recently stated points/answers:\n- ${recentAnswers.slice(-15).join('\n- ')}`
         : '';
@@ -187,7 +191,7 @@ async function startServer() {
         ? `\n\nDo not reuse any of these core ideas: ${recentIdeas.slice(-30).join(', ')}.`
         : '';
 
-      const fullPrompt = `${question}\n\n${shapeInstruction}\n${abstractionInstruction}${avoidListStr}${avoidIdeasStr}\n\ncoreIdea is a 4 to 8 word label for the specific argument, method, or framework your answer uses. Make sure this response brings up a fresh angle or distinct point not covered in the avoid list.\n\nRequired fields at every abstraction level:\n- observableConsequence: One specific prediction that follows if this answer is right. Name what would be measured and roughly where or when.\n- counterevidence: One specific observation or result that would count against this answer. Do not write 'none', 'unknown', or 'not applicable'.\nBoth observableConsequence and counterevidence are strictly required.`;
+      const fullPrompt = `${question}\n\n${shapeInstruction}\n${abstractionInstruction}${personaInstruction}${avoidListStr}${avoidIdeasStr}\n\ncoreIdea is a 4 to 8 word label for the specific argument, method, or framework your answer uses. Make sure this response brings up a fresh angle or distinct point not covered in the avoid list.\n\nRequired fields at every abstraction level:\n- observableConsequence: One specific prediction that follows if this answer is right. Name what would be measured and roughly where or when.\n- counterevidence: One specific observation or result that would count against this answer. Do not write 'none', 'unknown', or 'not applicable'.\nBoth observableConsequence and counterevidence are strictly required.`;
 
       const config: any = {
         responseMimeType: 'application/json',
@@ -414,6 +418,137 @@ Reply ONLY with valid JSON:
       console.error('Embedding error:', err);
       const status = err?.status || 500;
       return res.status(status).json({ error: err?.message || 'Embedding failed' });
+    }
+  });
+
+  app.post('/api/synthesize', async (req, res) => {
+    try {
+      const { topic, keptAnswers } = req.body;
+      if (!topic || typeof topic !== 'string') {
+        return res.status(400).json({ error: 'Missing or invalid topic' });
+      }
+      if (!Array.isArray(keptAnswers) || keptAnswers.length === 0) {
+        return res.status(400).json({ error: 'keptAnswers must be a non-empty array' });
+      }
+
+      const formattedAnswers = keptAnswers
+        .slice(0, 20)
+        .map((a: any, i: number) => {
+          const personaStr = a.persona ? ` [Lens: ${a.persona}]` : '';
+          const obsStr = a.observableConsequence ? `\n  - Observable: ${a.observableConsequence}` : '';
+          return `${i + 1}. "${a.coreIdea || 'Concept'}"${personaStr}:\n  ${a.text}${obsStr}`;
+        })
+        .join('\n\n');
+
+      const prompt = `You are the Ephemeral Mind Gem Core Synthesizer.
+TASK: Synthesize multiple divergent perspective streams and candidate hypotheses on this research subject into an integrated executive synthesis essay, and uncover hidden foundational assumptions.
+
+SUBJECT: ${topic}
+
+DIVERGENT CANDIDATE INSIGHTS:
+${formattedAnswers}
+
+OUTPUT INSTRUCTIONS:
+1. 'synthesisAnalysis': A structured 3-paragraph executive essay analyzing how these different perspectives interlock, contrast, and illuminate the core problem.
+2. 'hypotheticalAssumptions': An array of 3 to 4 non-obvious foundational assumptions that all or most of these arguments presuppose.
+3. 'researchFrontiers': An array of 3 emergent open empirical questions that warrant priority investigation.`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.5-flash',
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              synthesisAnalysis: { type: Type.STRING },
+              hypotheticalAssumptions: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+              },
+              researchFrontiers: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+              },
+            },
+            required: ['synthesisAnalysis', 'hypotheticalAssumptions', 'researchFrontiers'],
+          },
+          temperature: 0.3,
+          maxOutputTokens: 2048,
+        },
+      });
+
+      const parsed = JSON.parse(response.text || '{}');
+      return res.json({
+        synthesisAnalysis: parsed.synthesisAnalysis || 'Synthesis generated.',
+        hypotheticalAssumptions: parsed.hypotheticalAssumptions || [],
+        researchFrontiers: parsed.researchFrontiers || [],
+      });
+    } catch (err: any) {
+      console.error('Synthesis error:', err);
+      const status = err?.status || 500;
+      return res.status(status).json({ error: err?.message || 'Synthesis failed' });
+    }
+  });
+
+  app.post('/api/chat-memory', async (req, res) => {
+    try {
+      const { topic, keptAnswers, message, chatHistory } = req.body;
+      if (!message || typeof message !== 'string') {
+        return res.status(400).json({ error: 'Missing or invalid message' });
+      }
+
+      const answersSummary = Array.isArray(keptAnswers) && keptAnswers.length > 0
+        ? keptAnswers
+            .slice(0, 15)
+            .map((a: any, i: number) => {
+              const lens = a.persona ? ` [Perspective: ${a.persona}]` : '';
+              return `[Entry #${a.index || i + 1}${lens}]: "${a.coreIdea || 'Concept'}": ${a.text}`;
+            })
+            .join('\n\n')
+        : 'No specific stored insights yet.';
+
+      const historyFormatted = Array.isArray(chatHistory)
+        ? chatHistory
+            .slice(-6)
+            .map((m: any) => `${m.role === 'user' ? 'User' : 'EMG Core'}: ${m.content}`)
+            .join('\n')
+        : '';
+
+      const prompt = `You are the Ephemeral Mind Gem Conversational Mind.
+You are interacting with a researcher exploring a complex multi-perspective inquiry.
+You have access to the complete collective intelligence synthesized from up to 9 distinct intellectual dimensions.
+
+RESEARCH TOPIC:
+${topic || 'General Topic'}
+
+SYNTHESIZED COLLECTIVE INTELLIGENCE MEMORY BLOCK:
+${answersSummary}
+
+${historyFormatted ? `RECENT CONVERSATION HISTORY:\n${historyFormatted}\n` : ''}
+USER INQUIRY:
+${message}
+
+RESPONSE INSTRUCTIONS:
+- Directly answer the user inquiry by cross-referencing and synthesizing the relevant perspective streams from the memory block.
+- Explicitly cite the specific intellectual perspectives or Entry #s when referencing their claims.
+- Maintain the objective, rigorous, analytical tone of the Ephemeral Mind Gem Core.
+- Keep the response clear, structured, and focused (2-4 paragraphs).`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.5-flash',
+        contents: prompt,
+        config: {
+          temperature: 0.4,
+          maxOutputTokens: 1500,
+        },
+      });
+
+      return res.json({ reply: response.text || 'No response generated.' });
+    } catch (err: any) {
+      console.error('Chat memory error:', err);
+      const status = err?.status || 500;
+      return res.status(status).json({ error: err?.message || 'Chat generation failed' });
     }
   });
 

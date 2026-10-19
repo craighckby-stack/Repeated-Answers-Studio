@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { AnswerEntry, StudioSettings, DEFAULT_SETTINGS } from './types';
+import { AnswerEntry, StudioSettings, DEFAULT_SETTINGS, clampSettings, RunState } from './types';
+import { sanitizeContent } from './sanitizer';
 
 const DB_NAME = 'RepeatedAnswersStudioDB';
 const DB_VERSION = 1;
@@ -130,3 +131,113 @@ export async function loadArchivedRunEntries(runId: string): Promise<AnswerEntry
     return [];
   }
 }
+
+export interface EmgMemoryDump {
+  version: string;
+  kernel: string;
+  timestamp: number;
+  settings: StudioSettings;
+  runState: RunState;
+  macroSynthesis?: any;
+}
+
+export function createMemoryDump(
+  settings: StudioSettings,
+  runState: RunState,
+  macroSynthesis?: any
+): string {
+  const sanitizedTopic = sanitizeContent(settings.question).sanitized;
+  const cleanSettings = {
+    ...settings,
+    question: sanitizedTopic,
+    ghToken: '', // Never leak credentials in exported state dumps
+    appAccessToken: '',
+  };
+
+  const dump: EmgMemoryDump = {
+    version: '1.0.0-emg-core',
+    kernel: 'EMG-KERNEL-v0.3',
+    timestamp: Date.now(),
+    settings: cleanSettings,
+    runState: {
+      ...runState,
+      entries: runState.entries.map((e) => ({
+        ...e,
+        text: sanitizeContent(e.text || '').sanitized,
+      })),
+    },
+    macroSynthesis: macroSynthesis || undefined,
+  };
+
+  return JSON.stringify(dump, null, 2);
+}
+
+export function parseMemoryDump(rawJson: string): EmgMemoryDump {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(rawJson);
+  } catch {
+    throw new Error('Invalid JSON format in memory backup file.');
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Memory dump is not a valid JSON object.');
+  }
+
+  const rawSettings = parsed.settings || {};
+  const settings = clampSettings({
+    ...DEFAULT_SETTINGS,
+    ...rawSettings,
+    ghToken: '',
+    appAccessToken: '',
+  });
+
+  const rawEntries = Array.isArray(parsed.runState?.entries)
+    ? parsed.runState.entries
+    : Array.isArray(parsed.entries)
+    ? parsed.entries
+    : [];
+
+  const entries: AnswerEntry[] = rawEntries.map((e: any, idx: number) => ({
+    id: e.id || `restored-${idx}-${Date.now()}`,
+    runId: e.runId || 'restored-run',
+    index: typeof e.index === 'number' ? e.index : idx + 1,
+    text: typeof e.text === 'string' ? e.text : '',
+    coreIdea: typeof e.coreIdea === 'string' ? e.coreIdea : undefined,
+    observableConsequence: typeof e.observableConsequence === 'string' ? e.observableConsequence : undefined,
+    counterevidence: typeof e.counterevidence === 'string' ? e.counterevidence : undefined,
+    persona: typeof e.persona === 'string' ? e.persona : undefined,
+    status: e.status === 'kept' ? 'kept' : e.status === 'error' ? 'error' : 'rejected',
+    timestamp: typeof e.timestamp === 'number' ? e.timestamp : Date.now(),
+    modelUsed: e.modelUsed || 'restored',
+    shannonEntropy: typeof e.shannonEntropy === 'number' ? e.shannonEntropy : undefined,
+    emgAuditPassed: typeof e.emgAuditPassed === 'boolean' ? e.emgAuditPassed : undefined,
+  }));
+
+  const keptCount = entries.filter((e) => e.status === 'kept').length;
+  const rejectedCount = entries.filter((e) => e.status === 'rejected').length;
+
+  const runState: RunState = {
+    runId: parsed.runState?.runId || `run-restored-${Date.now()}`,
+    status: 'idle',
+    target: typeof parsed.runState?.target === 'number' ? parsed.runState.target : settings.target,
+    entries,
+    keptCount,
+    rejectedCount,
+    errorCount: 0,
+    consecutiveMisses: 0,
+    startTime: parsed.runState?.startTime || Date.now(),
+    lastCommitBatch: 1,
+    commitStatus: 'idle',
+  };
+
+  return {
+    version: parsed.version || '1.0.0-emg-core',
+    kernel: parsed.kernel || 'EMG-KERNEL-v0.3',
+    timestamp: parsed.timestamp || Date.now(),
+    settings,
+    runState,
+    macroSynthesis: parsed.macroSynthesis || null,
+  };
+}
+
