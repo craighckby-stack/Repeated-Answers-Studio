@@ -1,4 +1,4 @@
-/how to force a language model to explore the outer edges of a hypothesis space rather than regurgitating its first-instinct consensus answer
+how to force a language model to explore the outer edges of a hypothesis space rather than regurgitating its first-instinct consensus answer
 
 # Repeated Answers Studio
 
