@@ -1,5 +1,11 @@
 how to force a language model to explore the outer edges of a hypothesis space rather than regurgitating its first-instinct consensus answer
 
+
+preview 
+https://ai.studio/apps/b42d88c6-5e1e-43e1-8efa-e27705d753a0
+
+https://github.com/craighckby-stack/Repeated-Answers-Studio-Answers
+
 # Repeated Answers Studio
 
 > **Explore unique points on any topic by querying Gemini repeatedly with automated semantic novelty filtering, core-idea extraction, and GitHub sync.**
